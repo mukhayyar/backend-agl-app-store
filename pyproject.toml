@@ -1,0 +1,52 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "PENS AGL App Store Backend"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    # Web Frameworks
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "gunicorn>=21.2.0",
+
+    # gRPC
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "protobuf>=4.25.0",
+
+    # Database
+    "sqlalchemy>=2.0.0",
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.0",
+    "alembic>=1.13.0",
+
+    # HTTP Client
+    "aiohttp>=3.9.0",
+    "httpx>=0.26.0",
+
+    # Authentication & Security
+    "PyJWT>=2.8.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose[cryptography]>=3.3.0",
+
+    # Configuration
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+
+    # Rate Limiting
+    "slowapi>=0.1.9",
+
+    # Utilities
+    "python-multipart>=0.0.6",
+    "orjson>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "watchfiles>=0.21.0",
+]
