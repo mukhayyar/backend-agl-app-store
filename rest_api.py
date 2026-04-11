@@ -289,6 +289,8 @@ class SubmitAppRequest(BaseModel):
     categories: List[str] = []
     tags: List[str] = []
     screenshots: List[ScreenshotIn] = []
+    flatpak_build_id: Optional[int] = None    # flat-manager build ID after upload
+    flatpak_build_url: Optional[str] = None   # full build URL
 
     @field_validator("categories")
     @classmethod
@@ -869,6 +871,8 @@ def submit_app(
     sub = AppSubmission(
         user_id=user.id,
         app_id=body.app_id,
+        flatpak_build_id=body.flatpak_build_id,
+        flatpak_build_url=body.flatpak_build_url,
         name=body.name,
         summary=body.summary,
         description=body.description,
@@ -1010,6 +1014,29 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
     app_rec.reminder_7_sent = False
     sub.status = "approved"; sub.reviewed_at = now; sub.reviewer_id = admin.id
     db.commit()
+
+    # ── Publish to flat-manager OSTree repo ─────────────────────────────────
+    fm_result = None
+    if sub.flatpak_build_id and FLAT_MANAGER_ADMIN_TOKEN:
+        try:
+            import urllib.request as _ureq, json as _j
+            _req = _ureq.Request(
+                f"{FLAT_MANAGER_API}/api/v1/build/{sub.flatpak_build_id}/publish",
+                data=b"{}",
+                headers={
+                    "Authorization": f"Bearer {FLAT_MANAGER_ADMIN_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with _ureq.urlopen(_req, timeout=30) as _resp:
+                fm_result = _j.loads(_resp.read())
+            print(f"[FM] Published build {sub.flatpak_build_id}: {fm_result}")
+        except Exception as _fm_err:
+            print(f"[FM] Publish warning (non-fatal): {_fm_err}")
+            fm_result = {"warning": str(_fm_err)}
+    elif sub.flatpak_build_id and not FLAT_MANAGER_ADMIN_TOKEN:
+        print(f"[FM] FLAT_MANAGER_ADMIN_TOKEN not set — skipping publish for build {sub.flatpak_build_id}")
     # [HOOK] notify approved
     try:
         _app_obj = db.query(App).filter(App.id == sub.app_id).first() if sub.app_id else None
@@ -1040,7 +1067,7 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
             f"<li><strong>Fingerprint:</strong> <code>{gpg_fingerprint_val or 'pending'}</code></li>"
             f"<li><strong>Expires:</strong> {expiry_str}</li></ul>"
             f"<p>Renew at <a href=\"https://admin.agl-store.cyou/developer/portal\">Developer Portal</a>.</p></div>")
-    return {"message": f"App '{sub.name}' approved and live", "app_id": sub.app_id}
+    return {"message": f"App '{sub.name}' approved and live", "app_id": sub.app_id, "flatpak_published": fm_result is not None and "warning" not in (fm_result or {}), "flatpak_build": fm_result}
 
 @app.post("/admin/submissions/{sub_id}/reject")
 def reject_submission(sub_id: int, body: RejectRequest, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
@@ -1071,6 +1098,10 @@ def reject_submission(sub_id: int, body: RejectRequest, admin: User = Depends(_r
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 GITHUB_OAUTH_SCOPES = "read:user,user:email"
+
+# ── Flat-manager integration ──────────────────────────────────────────────────
+FLAT_MANAGER_API = os.getenv("FLAT_MANAGER_API", "http://127.0.0.1:8080")
+FLAT_MANAGER_ADMIN_TOKEN = os.getenv("FLAT_MANAGER_ADMIN_TOKEN", "")
 FRONTEND_ADMIN_URL = os.getenv("FRONTEND_ADMIN_URL", "https://admin.agl-store.cyou")
 
 @app.get("/auth/github/authorize")
@@ -1300,6 +1331,40 @@ def github_link_callback(code: str, state: str = "", token: str = Query(None), d
     db.commit()
     success_msg = urllib.parse.quote(f"GitHub account @{gh_login} linked successfully.")
     return RedirectResponse(f"{FRONTEND_ADMIN_URL}/admin/settings#github_linked={success_msg}", status_code=302)
+
+
+@app.get("/admin/builds/{build_id}/status")
+def get_build_status(build_id: int, admin: User = Depends(_require_jwt_admin)):
+    """Proxy flat-manager build status for admin inspection."""
+    if not FLAT_MANAGER_ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Flat-manager not configured")
+    import urllib.request as _ureq, json as _j
+    try:
+        req = _ureq.Request(
+            f"{FLAT_MANAGER_API}/api/v1/build/{build_id}",
+            headers={"Authorization": f"Bearer {FLAT_MANAGER_ADMIN_TOKEN}"},
+        )
+        with _ureq.urlopen(req, timeout=10) as resp:
+            return _j.loads(resp.read())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/admin/builds")
+def list_builds(admin: User = Depends(_require_jwt_admin)):
+    """List all flat-manager builds."""
+    if not FLAT_MANAGER_ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Flat-manager not configured")
+    import urllib.request as _ureq, json as _j
+    try:
+        req = _ureq.Request(
+            f"{FLAT_MANAGER_API}/api/v1/builds",
+            headers={"Authorization": f"Bearer {FLAT_MANAGER_ADMIN_TOKEN}"},
+        )
+        with _ureq.urlopen(req, timeout=10) as resp:
+            return _j.loads(resp.read())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 @app.get("/admin/stats")
 def admin_stats(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
@@ -1672,9 +1737,12 @@ def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_a
         'BUILD_DIR="flatpak_build"\n'
         'REPO_DIR="repo"\n'
         f'FLAT_MANAGER_URL="{FLAT_MANAGER_URL}"\n'
-        f'FLAT_MANAGER_TOKEN="{token}"\n\n'
-        'echo "[1/5] Checking prerequisites..."\n'
-        'for cmd in flatpak flatpak-builder flat-manager-client curl python3; do\n'
+        f'FLAT_MANAGER_TOKEN="{token}"\n'
+        '# Set your AGL Store developer JWT (from the admin when you were onboarded)\n'
+        'AGL_STORE_TOKEN="${AGL_STORE_TOKEN:-}"\n'
+        f'AGL_STORE_URL="https://api.agl-store.cyou"\n\n'
+        'echo "[1/6] Checking prerequisites..."\n'
+        'for cmd in flatpak flatpak-builder flat-manager-client curl; do\n'
         '    if ! command -v "$cmd" &>/dev/null; then\n'
         '        echo "ERROR: $cmd not found."\n'
         '        echo "  Ubuntu/Debian: sudo apt install flatpak flatpak-builder"\n'
@@ -1682,23 +1750,35 @@ def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_a
         '        exit 1\n'
         '    fi\n'
         'done\n\n'
-        'echo "[2/5] Building Flatpak..."\n'
+        'echo "[2/6] Building Flatpak..."\n'
         'flatpak-builder --force-clean --repo="$REPO_DIR" "$BUILD_DIR" "$MANIFEST"\n\n'
-        'echo "[3/5] Creating build slot on AGL hub..."\n'
-        'BUILD_ID=$(curl -sf -X POST "$FLAT_MANAGER_URL/api/v1/build" \\\n'
-        '    -H "Authorization: Bearer $FLAT_MANAGER_TOKEN" \\\n'
+        'echo "[3/6] Creating build slot on AGL hub..."\n'
+        'BUILD_URL=$(flat-manager-client create "$FLAT_MANAGER_URL" stable)\n'
+        'BUILD_ID=$(echo "$BUILD_URL" | grep -oP "build/\\K[0-9]+")\n'
+        'echo "  Build URL : $BUILD_URL"\n'
+        'echo "  Build ID  : $BUILD_ID"\n\n'
+        'echo "[4/6] Uploading build to AGL hub..."\n'
+        'flat-manager-client push "$BUILD_URL" "./$REPO_DIR"\n\n'
+        'echo "[5/6] Committing build (waits for OSTree ingest)..."\n'
+        'flat-manager-client commit --wait "$BUILD_URL"\n\n'
+        'echo "[6/6] Submitting app for admin review..."\n'
+        'if [ -z "$AGL_STORE_TOKEN" ]; then\n'
+        '  echo "WARNING: AGL_STORE_TOKEN not set — skipping auto-submit."\n'
+        '  echo "  Set it: export AGL_STORE_TOKEN=<your-jwt>"\n'
+        '  echo "  Then run: curl -sf -X POST $AGL_STORE_URL/developer/submit \\"\n'
+        f'  echo "    -H \\"Authorization: Bearer \\$AGL_STORE_TOKEN\\" \\"\n'
+        '  echo "    -H \\"Content-Type: application/json\\" \\"\n'
+        f'  echo "    -d \\"{{\\\"app_id\\\":\\\"$APP_ID\\\",\\\"flatpak_build_id\\\":$BUILD_ID,\\\"flatpak_build_url\\\":\\\"$BUILD_URL\\\"}}\\""\n'
+        'else\n'
+        f'  SUBMIT_RESP=$(curl -sf -X POST "$AGL_STORE_URL/developer/submit" \\\n'
+        '    -H "Authorization: Bearer $AGL_STORE_TOKEN" \\\n'
         '    -H "Content-Type: application/json" \\\n'
-        "    -d '{\"repo\":\"stable\"}' | python3 -c \"import sys,json; print(json.load(sys.stdin)['id'])\")\n"
-        'echo "  Build ID: $BUILD_ID"\n\n'
-        'echo "[4/5] Uploading build..."\n'
-        'flat-manager-client push \\\n'
-        '    --token "$FLAT_MANAGER_TOKEN" \\\n'
-        '    "$FLAT_MANAGER_URL" "$BUILD_ID" "./$REPO_DIR"\n\n'
-        'echo "[5/5] Committing (triggers AGL review pipeline)..."\n'
-        'curl -sf -X POST "$FLAT_MANAGER_URL/api/v1/build/$BUILD_ID/commit" \\\n'
-        '    -H "Authorization: Bearer $FLAT_MANAGER_TOKEN"\n'
+        '    -d "{\"app_id\":\"$APP_ID\",\"flatpak_build_id\":$BUILD_ID,\"flatpak_build_url\":\"$BUILD_URL\"}")\n'
+        '  echo "  Submission response: $SUBMIT_RESP"\n'
+        'fi\n'
         'echo ""\n'
-        'echo "Done! Your app will appear at https://agl-store.cyou after review."\n'
+        'echo "Done! Your build is in the AGL review queue."\n'
+        'echo "Build ID $BUILD_ID will be published once an admin approves."\n'
     )
 
     # Generate trial GPG key (1-day) for unverified developers

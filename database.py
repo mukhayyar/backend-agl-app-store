@@ -298,6 +298,8 @@ class AppSubmission(Base):
     submitted_at = Column(DateTime, default=datetime.utcnow)
     reviewed_at = Column(DateTime)
     reviewer_id = Column(Integer, ForeignKey('users.id'))
+    flatpak_build_id = Column(Integer, nullable=True)   # flat-manager build ID
+    flatpak_build_url = Column(Text, nullable=True)     # full build URL from flat-manager
 
     submitter = relationship("User", foreign_keys=[user_id])
     reviewer = relationship("User", foreign_keys=[reviewer_id])
