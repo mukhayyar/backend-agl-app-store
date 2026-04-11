@@ -53,6 +53,19 @@ class App(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
     added_at = Column(DateTime, default=datetime.utcnow)
     is_mobile_friendly = Column(Boolean, default=False)
+    published = Column(Boolean, default=True)
+    expires_at = Column(DateTime, nullable=True)
+    gpg_fingerprint = Column(String(255), nullable=True)
+    gpg_public_key = Column(Text, nullable=True)
+    gpg_uid = Column(String(255), nullable=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reminder_30_sent = Column(Boolean, default=False)
+    reminder_7_sent = Column(Boolean, default=False)
+    is_verified = Column(Boolean, default=False)
+    scan_result = Column(JSON, nullable=True)        # latest scanner output
+    scan_verdict = Column(String(16), nullable=True) # PASS / WARN / BLOCK / PENDING
+    scan_at = Column(DateTime, nullable=True)
+    scan_blocked = Column(Boolean, default=False)  # True if scanner vetoed
     verification_verified = Column(Boolean, default=False)
     verification_method = Column(String(50), default="none")
     verification_login_name = Column(String(255))
@@ -83,6 +96,9 @@ class User(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     # RBAC role: admin, reviewer, publisher, user
     role = Column(String(20), default="user", nullable=False)
+    is_trusted_publisher = Column(Boolean, default=False)
+    trusted_at = Column(DateTime, nullable=True)
+    trusted_by = Column(Integer, nullable=True)
     
     # Relationships
     developed_apps = relationship("App", secondary=app_developers, back_populates="developers")
@@ -90,6 +106,18 @@ class User(Base):
     favorites = relationship("Favorite", back_populates="user")
     transactions = relationship("Transaction", back_populates="user")
     roles = relationship("UserRole", back_populates="user")
+
+    # Email auth columns (migration 005_email_auth)
+    email = Column(String(255), nullable=True)
+    password_hash = Column(String(255), nullable=True)
+    email_verified = Column(Boolean, default=False, nullable=False)
+    email_verification_token = Column(String(128), nullable=True)
+    email_verification_expires = Column(DateTime, nullable=True)
+    password_reset_token = Column(String(128), nullable=True)
+    password_reset_expires = Column(DateTime, nullable=True)
+    is_organization_email = Column(Boolean, default=False, nullable=False)
+    organization_domain = Column(String(255), nullable=True)
+    auth_provider = Column(String(20), default="github", nullable=False)
 
 class ConnectedAccount(Base):
     __tablename__ = "connected_accounts"
@@ -230,3 +258,62 @@ class UserRole(Base):
     
     # Relationships
     user = relationship("User", back_populates="roles")
+
+class DeveloperToken(Base):
+    """Personal API tokens for developers (used for app submission via CLI/CI)."""
+    __tablename__ = "developer_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    name = Column(String(100), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True)  # SHA-256 hex
+    token_prefix = Column(String(16), nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime)
+    expires_at = Column(DateTime)
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class AppSubmission(Base):
+    """App metadata submission awaiting admin review."""
+    __tablename__ = "app_submissions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    app_id = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False)
+    summary = Column(Text)
+    description = Column(Text)
+    icon = Column(String(500))
+    homepage = Column(String(500))
+    license = Column(String(255))
+    app_type = Column(String(50), default="desktop-application")
+    categories = Column(JSON)
+    tags = Column(JSON)
+    screenshots = Column(JSON)
+    status = Column(String(20), default="pending")  # pending | approved | rejected
+    rejection_reason = Column(Text)
+    submitted_at = Column(DateTime, default=datetime.utcnow)
+    reviewed_at = Column(DateTime)
+    reviewer_id = Column(Integer, ForeignKey('users.id'))
+    flatpak_build_id = Column(Integer, nullable=True)   # flat-manager build ID
+    flatpak_build_url = Column(Text, nullable=True)     # full build URL from flat-manager
+
+    submitter = relationship("User", foreign_keys=[user_id])
+    reviewer = relationship("User", foreign_keys=[reviewer_id])
+
+
+class DeveloperGpgKey(Base):
+    __tablename__ = "developer_gpg_keys"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    fingerprint = Column(String(64), nullable=True)
+    public_key = Column(Text, nullable=True)
+    uid = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)
+    user = relationship("User", foreign_keys=[user_id])
+
