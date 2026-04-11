@@ -5,7 +5,7 @@ Provides REST endpoints for the web frontend, admin backoffice,
 and the developer publishing key workflow.
 """
 
-import os, subprocess, shutil, tempfile
+import os, subprocess, shutil, tempfile, urllib.parse, urllib.request
 import bcrypt, datetime, secrets, hashlib
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Header, Query, Depends
@@ -1099,7 +1099,6 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
 
     # Exchange code for access token
-    import urllib.request, json as _json
     token_req = urllib.request.Request(
         "https://github.com/login/oauth/access_token",
         data=urllib.parse.urlencode({
