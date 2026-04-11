@@ -1,0 +1,82 @@
+{
+    email admin@${DOMAIN}
+    # Remove 'local_certs' if using public ACME / Let's Encrypt
+    local_certs
+}
+
+# Use Cloudflare Origin Certificates (place in ./certs/ on the host)
+# Comment out this block and remove 'import cf_tls' lines to use auto-ACME instead.
+(cf_tls) {
+    tls /certs/cf_origin.crt /certs/cf_origin.key
+}
+
+${DOMAIN}, www.${DOMAIN} {
+    import cf_tls
+    reverse_proxy frontend:3000
+    log {
+        output file /data/frontend.log
+        format console
+    }
+}
+
+admin.${DOMAIN} {
+    import cf_tls
+    # /api/* is proxied to the REST backend so the admin SPA can call it
+    # from the same origin — avoids CORS issues.
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy rest:8002
+    }
+    reverse_proxy admin:3001
+    log {
+        output file /data/admin.log
+        format console
+    }
+}
+
+hub.${DOMAIN} {
+    import cf_tls
+    reverse_proxy flat-manager:8080
+    log {
+        output file /data/hub.log
+        format console
+    }
+}
+
+repo.${DOMAIN} {
+    import cf_tls
+    reverse_proxy repo-server:80
+    log {
+        output file /data/repo.log
+        format console
+    }
+}
+
+api.${DOMAIN} {
+    import cf_tls
+    @options method OPTIONS
+    handle @options {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+        header Access-Control-Allow-Headers "*"
+        header Access-Control-Max-Age "86400"
+        respond "" 204
+    }
+    header Access-Control-Allow-Origin "*"
+    header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+    header Access-Control-Allow-Headers "*"
+    reverse_proxy rest:8002
+    log {
+        output file /data/api.log
+        format console
+    }
+}
+
+webhook.${DOMAIN} {
+    import cf_tls
+    reverse_proxy webhook:9000
+    log {
+        output file /data/webhook.log
+        format console
+    }
+}

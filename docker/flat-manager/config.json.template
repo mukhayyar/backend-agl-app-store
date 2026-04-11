@@ -1,0 +1,16 @@
+{
+  "host": "0.0.0.0",
+  "port": 8080,
+  "gpg-homedir": "/root/.gnupg",
+  "database-url": "postgres://${DB_USER}:${DB_PASSWORD}@postgres/flatpak_repo",
+  "build-repo-base": "/srv/flatpak-repo/build-repo",
+  "repos": {
+    "stable": {
+      "path": "/srv/flatpak-repo",
+      "suggested-repo-name": "${FLATPAK_REPO_NAME}",
+      "gpg-key": "${GPG_KEY_ID}",
+      "subsets": {}
+    }
+  },
+  "secret": "${FLAT_MANAGER_SECRET_B64}"
+}
