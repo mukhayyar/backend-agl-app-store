@@ -5,7 +5,7 @@ Provides REST endpoints for the web frontend, admin backoffice,
 and the developer publishing key workflow.
 """
 
-import os, subprocess, shutil, tempfile, urllib.parse, urllib.request
+import os, subprocess, shutil, tempfile
 import bcrypt, datetime, secrets, hashlib
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Header, Query, Depends
@@ -120,10 +120,7 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def _verify_password(password: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(password.encode(), hashed.encode())
-    except ValueError:
-        return False
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -263,7 +260,6 @@ class IssueTokenRequest(BaseModel):
     developer_name: str
     role: str = "developer"
     app_id: Optional[str] = None
-    is_trial: bool = False
 
 class RegisterAppRequest(BaseModel):
     app_id: str
@@ -289,8 +285,6 @@ class SubmitAppRequest(BaseModel):
     categories: List[str] = []
     tags: List[str] = []
     screenshots: List[ScreenshotIn] = []
-    flatpak_build_id: Optional[int] = None    # flat-manager build ID after upload
-    flatpak_build_url: Optional[str] = None   # full build URL
 
     @field_validator("categories")
     @classmethod
@@ -389,13 +383,12 @@ def _email_publisher_key_expired(to: str, name: str):
         f"background:#4f46e5;color:#fff;padding:12px 24px;border-radius:8px;"
         f"text-decoration:none;font-weight:600;margin:16px 0'>Renew Key</a></div>")
 
-def _generate_gpg_key(app_id: str, app_name: str, developer_name: str, expire_years: int = 1, expire_days: Optional[int] = None):
+def _generate_gpg_key(app_id: str, app_name: str, developer_name: str, expire_years: int = 1):
     """Generate a GPG key for an app. Returns (fingerprint, public_key_armored, gpg_uid)."""
     gpg_home = tempfile.mkdtemp(prefix="penshub_gpg_")
     uid_email = f"app+{app_id.replace('.', '-')}@agl-store.cyou"
     uid_name = f"{app_name} (PensHub)"
-    _days = expire_days if expire_days is not None else 365 * expire_years
-    expire_date = (datetime.datetime.utcnow() + datetime.timedelta(days=_days)).strftime("%Y-%m-%d")
+    expire_date = (datetime.datetime.utcnow() + datetime.timedelta(days=365 * expire_years)).strftime("%Y-%m-%d")
     batch = (
         "%no-protection\n"
         "Key-Type: RSA\n"
@@ -539,7 +532,7 @@ def get_categories(db: Session = Depends(get_db)):
 @app.get("/stats")
 def get_stats(db: Session = Depends(get_db)):
     return {
-        "total_apps": db.query(App).filter(App.published == True).count(),
+        "total_apps": db.query(App).count(),
         "total_users": db.query(User).count(),
         "total_categories": db.query(Category).count(),
     }
@@ -718,7 +711,7 @@ def check_email(email: str = Query(...)):
 
 @app.get("/auth/methods")
 def auth_methods():
-    return {"methods": [{"method": "github", "name": "GitHub"}, {"method": "email", "name": "Email"}]}
+    return {"methods": [{"method": "github", "name": "GitHub"}]}
 
 @app.post("/auth/login")
 async def login_github(body: GithubLoginRequest, db: Session = Depends(get_db)):
@@ -786,7 +779,7 @@ async def login_github(body: GithubLoginRequest, db: Session = Depends(get_db)):
 
 @app.get("/auth/user")
 def get_auth_user(user: User = Depends(_require_jwt_user), db: Session = Depends(get_db)):
-    email = user.email or _get_user_email(db, user.id)
+    email = _get_user_email(db, user.id)
     return {
         "id": user.id,
         "display_name": user.display_name,
@@ -871,8 +864,6 @@ def submit_app(
     sub = AppSubmission(
         user_id=user.id,
         app_id=body.app_id,
-        flatpak_build_id=body.flatpak_build_id,
-        flatpak_build_url=body.flatpak_build_url,
         name=body.name,
         summary=body.summary,
         description=body.description,
@@ -991,52 +982,24 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
     # Generate GPG signing certificate (non-fatal if it fails)
     gpg_fingerprint_val = None
     gpg_uid_val = None
-    _is_trusted = dev and getattr(dev, 'is_trusted_publisher', False)
-    _gpg_expire_days = None if _is_trusted else 1
     try:
         gpg_fingerprint_val, gpg_pub, gpg_uid_val = _generate_gpg_key(
-            sub.app_id, sub.name, dev.display_name if dev else "Developer",
-            expire_days=_gpg_expire_days)
+            sub.app_id, sub.name, dev.display_name if dev else "Developer")
         app_rec.gpg_fingerprint = gpg_fingerprint_val
         app_rec.gpg_public_key = gpg_pub
         app_rec.gpg_uid = gpg_uid_val
     except Exception as _gpg_err:
         print(f"GPG keygen warning: {_gpg_err}")
-    # Trusted publishers get full 1-year listing; unverified get 1-day trial
-    if _is_trusted:
+    # Mark as verified if owner is a trusted publisher
+    if dev and getattr(dev, 'is_trusted_publisher', False):
         app_rec.is_verified = True
-        app_rec.expires_at = now + datetime.timedelta(days=365)
-    else:
-        app_rec.expires_at = now + datetime.timedelta(days=1)
     app_rec.published = True
+    app_rec.expires_at = now + datetime.timedelta(days=365)
     app_rec.owner_user_id = sub.user_id
     app_rec.reminder_30_sent = False
     app_rec.reminder_7_sent = False
     sub.status = "approved"; sub.reviewed_at = now; sub.reviewer_id = admin.id
     db.commit()
-
-    # ── Publish to flat-manager OSTree repo ─────────────────────────────────
-    fm_result = None
-    if sub.flatpak_build_id and FLAT_MANAGER_ADMIN_TOKEN:
-        try:
-            import urllib.request as _ureq, json as _j
-            _req = _ureq.Request(
-                f"{FLAT_MANAGER_API}/api/v1/build/{sub.flatpak_build_id}/publish",
-                data=b"{}",
-                headers={
-                    "Authorization": f"Bearer {FLAT_MANAGER_ADMIN_TOKEN}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with _ureq.urlopen(_req, timeout=30) as _resp:
-                fm_result = _j.loads(_resp.read())
-            print(f"[FM] Published build {sub.flatpak_build_id}: {fm_result}")
-        except Exception as _fm_err:
-            print(f"[FM] Publish warning (non-fatal): {_fm_err}")
-            fm_result = {"warning": str(_fm_err)}
-    elif sub.flatpak_build_id and not FLAT_MANAGER_ADMIN_TOKEN:
-        print(f"[FM] FLAT_MANAGER_ADMIN_TOKEN not set — skipping publish for build {sub.flatpak_build_id}")
     # [HOOK] notify approved
     try:
         _app_obj = db.query(App).filter(App.id == sub.app_id).first() if sub.app_id else None
@@ -1067,7 +1030,7 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
             f"<li><strong>Fingerprint:</strong> <code>{gpg_fingerprint_val or 'pending'}</code></li>"
             f"<li><strong>Expires:</strong> {expiry_str}</li></ul>"
             f"<p>Renew at <a href=\"https://admin.agl-store.cyou/developer/portal\">Developer Portal</a>.</p></div>")
-    return {"message": f"App '{sub.name}' approved and live", "app_id": sub.app_id, "flatpak_published": fm_result is not None and "warning" not in (fm_result or {}), "flatpak_build": fm_result}
+    return {"message": f"App '{sub.name}' approved and live", "app_id": sub.app_id}
 
 @app.post("/admin/submissions/{sub_id}/reject")
 def reject_submission(sub_id: int, body: RejectRequest, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
@@ -1098,10 +1061,6 @@ def reject_submission(sub_id: int, body: RejectRequest, admin: User = Depends(_r
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 GITHUB_OAUTH_SCOPES = "read:user,user:email"
-
-# ── Flat-manager integration ──────────────────────────────────────────────────
-FLAT_MANAGER_API = os.getenv("FLAT_MANAGER_API", "http://127.0.0.1:8080")
-FLAT_MANAGER_ADMIN_TOKEN = os.getenv("FLAT_MANAGER_ADMIN_TOKEN", "")
 FRONTEND_ADMIN_URL = os.getenv("FRONTEND_ADMIN_URL", "https://admin.agl-store.cyou")
 
 @app.get("/auth/github/authorize")
@@ -1130,6 +1089,7 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
 
     # Exchange code for access token
+    import urllib.request, json as _json
     token_req = urllib.request.Request(
         "https://github.com/login/oauth/access_token",
         data=urllib.parse.urlencode({
@@ -1192,25 +1152,39 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
         ConnectedAccount.provider_user_id == int(gh_id),
     ).first()
 
-    if not account:
-        # Admin OAuth: no auto-signup — GitHub account must be pre-linked to an admin user
-        error_msg = urllib.parse.quote("No admin account is linked to this GitHub profile. Ask your system administrator to link your GitHub account first.")
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error={error_msg}", status_code=302)
-
-    user = account.user
-
-    # Only admin and reviewer roles may access the admin panel via GitHub OAuth
-    user_role = getattr(user, "role", "developer")
-    if user_role not in ("admin", "reviewer"):
-        error_msg = urllib.parse.quote(f"Your account ({gh_login}) has role '{user_role}' and cannot access the admin panel.")
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error={error_msg}", status_code=302)
-
-    # Update linked account metadata
-    account.login = gh_login
-    account.avatar_url = gh_avatar
-    account.display_name = gh_name
-    account.email = gh_email
-    account.last_used = now
+    if account:
+        user = account.user
+        account.login = gh_login
+        account.avatar_url = gh_avatar
+        account.display_name = gh_name
+        account.email = gh_email
+        account.last_used = now
+    else:
+        # Create new user
+        user = User(
+            display_name=gh_name,
+            default_account_provider="github",
+            default_account_login=gh_login,
+            invite_code=secrets.token_urlsafe(8),
+            auth_provider="github",
+            created_at=now,
+            updated_at=now,
+            role="developer",  # default role for OAuth signups
+        )
+        db.add(user)
+        db.flush()
+        account = ConnectedAccount(
+            user_id=user.id,
+            provider="github",
+            provider_user_id=int(gh_id),
+            login=gh_login,
+            avatar_url=gh_avatar,
+            display_name=gh_name,
+            email=gh_email,
+            last_used=now,
+            created_at=now,
+        )
+        db.add(account)
 
     db.commit()
     db.refresh(user)
@@ -1222,149 +1196,6 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
     frontend_url = f"{FRONTEND_ADMIN_URL}/#github_token={jwt_token}"
     return RedirectResponse(frontend_url, status_code=302)
 
-
-
-@app.get("/auth/github/link")
-def github_link_start(admin: User = Depends(_require_jwt_admin)):
-    """Start GitHub OAuth flow to link a GitHub account to the current admin user."""
-    if not GITHUB_CLIENT_ID:
-        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
-    state = secrets.token_urlsafe(16)
-    callback_url = f"{FRONTEND_ADMIN_URL}/api/auth/github/link-callback"
-    params = urllib.parse.urlencode({
-        "client_id": GITHUB_CLIENT_ID,
-        "redirect_uri": callback_url,
-        "scope": GITHUB_OAUTH_SCOPES,
-        "state": state,
-    })
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(f"https://github.com/login/oauth/authorize?{params}")
-
-
-@app.get("/auth/github/link-callback")
-def github_link_callback(code: str, state: str = "", token: str = Query(None), db: Session = Depends(get_db)):
-    """GitHub redirects here after linking. token= is the admin JWT passed as query param."""
-    import json as _json
-    # Validate the admin JWT from query param (passed by frontend)
-    if not token:
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=missing_token", status_code=302)
-    try:
-        payload = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user_id = payload["sub"]
-        role = payload.get("role", "developer")
-    except Exception:
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=invalid_token", status_code=302)
-    if role not in ("admin", "reviewer"):
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=not_admin", status_code=302)
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=user_not_found", status_code=302)
-
-    # Exchange code for token
-    token_req = urllib.request.Request(
-        "https://github.com/login/oauth/access_token",
-        data=urllib.parse.urlencode({
-            "client_id": GITHUB_CLIENT_ID,
-            "client_secret": GITHUB_CLIENT_SECRET,
-            "code": code,
-        }).encode(),
-        headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(token_req, timeout=10) as resp:
-            token_data = _json.loads(resp.read())
-    except Exception as ex:
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=github_exchange_failed", status_code=302)
-
-    gh_token = token_data.get("access_token")
-    if not gh_token:
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=no_github_token", status_code=302)
-
-    # Get GitHub user info
-    user_req = urllib.request.Request(
-        "https://api.github.com/user",
-        headers={"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json"},
-    )
-    try:
-        with urllib.request.urlopen(user_req, timeout=10) as resp:
-            gh_user = _json.loads(resp.read())
-    except Exception:
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=github_user_failed", status_code=302)
-
-    gh_id = int(gh_user.get("id", 0))
-    gh_login = gh_user.get("login", "")
-    gh_name = gh_user.get("name") or gh_login
-    gh_email = gh_user.get("email", "")
-    gh_avatar = gh_user.get("avatar_url", "")
-    now = datetime.datetime.utcnow()
-
-    # Check if this GitHub account is already linked to a different user
-    existing = db.query(ConnectedAccount).filter(
-        ConnectedAccount.provider == "github",
-        ConnectedAccount.provider_user_id == gh_id,
-    ).first()
-    if existing and existing.user_id != user_id:
-        error_msg = urllib.parse.quote(f"GitHub account @{gh_login} is already linked to a different user.")
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error={error_msg}", status_code=302)
-
-    if existing:
-        existing.login = gh_login
-        existing.avatar_url = gh_avatar
-        existing.display_name = gh_name
-        existing.email = gh_email
-        existing.last_used = now
-    else:
-        account = ConnectedAccount(
-            user_id=user_id,
-            provider="github",
-            provider_user_id=gh_id,
-            login=gh_login,
-            avatar_url=gh_avatar,
-            display_name=gh_name,
-            email=gh_email,
-            last_used=now,
-            created_at=now,
-        )
-        db.add(account)
-
-    db.commit()
-    success_msg = urllib.parse.quote(f"GitHub account @{gh_login} linked successfully.")
-    return RedirectResponse(f"{FRONTEND_ADMIN_URL}/admin/settings#github_linked={success_msg}", status_code=302)
-
-
-@app.get("/admin/builds/{build_id}/status")
-def get_build_status(build_id: int, admin: User = Depends(_require_jwt_admin)):
-    """Proxy flat-manager build status for admin inspection."""
-    if not FLAT_MANAGER_ADMIN_TOKEN:
-        raise HTTPException(status_code=503, detail="Flat-manager not configured")
-    import urllib.request as _ureq, json as _j
-    try:
-        req = _ureq.Request(
-            f"{FLAT_MANAGER_API}/api/v1/build/{build_id}",
-            headers={"Authorization": f"Bearer {FLAT_MANAGER_ADMIN_TOKEN}"},
-        )
-        with _ureq.urlopen(req, timeout=10) as resp:
-            return _j.loads(resp.read())
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.get("/admin/builds")
-def list_builds(admin: User = Depends(_require_jwt_admin)):
-    """List all flat-manager builds."""
-    if not FLAT_MANAGER_ADMIN_TOKEN:
-        raise HTTPException(status_code=503, detail="Flat-manager not configured")
-    import urllib.request as _ureq, json as _j
-    try:
-        req = _ureq.Request(
-            f"{FLAT_MANAGER_API}/api/v1/builds",
-            headers={"Authorization": f"Bearer {FLAT_MANAGER_ADMIN_TOKEN}"},
-        )
-        with _ureq.urlopen(req, timeout=10) as resp:
-            return _j.loads(resp.read())
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
 
 @app.get("/admin/stats")
 def admin_stats(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
@@ -1443,43 +1274,28 @@ def renew_app(app_id: str, user: User = Depends(_get_dev_user), db: Session = De
 
 # ── Admin: App Lifecycle Management ───────────────────────────────────────
 @app.get("/admin/apps")
-def admin_list_all_apps(
-    search: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
-    limit: int = Query(200, le=500),
-    offset: int = Query(0),
-    admin: User = Depends(_require_jwt_admin),
-    db: Session = Depends(get_db),
-):
-    """Admin: list ALL apps including unpublished and expired."""
-    _now = datetime.datetime.utcnow()
+def admin_list_apps(published: Optional[bool] = Query(None),
+    expiring_within_days: Optional[int] = Query(None),
+    admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
     q = db.query(App)
-    if search:
-        like = f"%{search.lower()}%"
-        q = q.filter(App.name.ilike(like) | App.developer_name.ilike(like) | App.id.ilike(like))
-    if status == "published":
-        q = q.filter(App.published == True).filter((App.expires_at == None) | (App.expires_at > _now))
-    elif status == "unpublished":
-        q = q.filter(App.published == False)
-    elif status == "expired":
-        q = q.filter(App.expires_at != None).filter(App.expires_at <= _now)
-    elif status == "expiring":
-        soon = _now + datetime.timedelta(days=30)
-        q = q.filter(App.published == True).filter(App.expires_at != None).filter(App.expires_at > _now).filter(App.expires_at <= soon)
-    return [
-        {
-            "id": a.id, "name": a.name, "summary": a.summary,
-            "developer_name": a.developer_name, "icon": a.icon, "type": a.type,
-            "published": a.published, "is_verified": bool(a.is_verified),
-            "expires_at": a.expires_at.isoformat() if a.expires_at else None,
-            "added_at": a.added_at.isoformat() if a.added_at else None,
-            "updated_at": a.updated_at.isoformat() if a.updated_at else None,
-            "owner_user_id": a.owner_user_id,
-            "gpg_fingerprint": a.gpg_fingerprint,
-            "categories": [cat.name for cat in a.categories],
-        }
-        for a in q.order_by(App.updated_at.desc()).offset(offset).limit(limit).all()
-    ]
+    now = datetime.datetime.utcnow()
+    if published is not None:
+        q = q.filter(App.published == published)
+    if expiring_within_days is not None:
+        cutoff = now + datetime.timedelta(days=expiring_within_days)
+        q = q.filter(App.expires_at != None, App.expires_at <= cutoff, App.expires_at >= now)
+    apps_list = q.order_by(App.added_at.desc()).all()
+    result = []
+    for a in apps_list:
+        days_left = (a.expires_at - now).days if a.expires_at else None
+        owner = db.query(User).filter(User.id == a.owner_user_id).first() if a.owner_user_id else None
+        result.append({"id": a.id, "name": a.name, "published": a.published,
+            "expires_at": str(a.expires_at) if a.expires_at else None,
+            "days_until_expiry": days_left, "gpg_fingerprint": a.gpg_fingerprint,
+            "gpg_uid": a.gpg_uid,
+            "owner": {"id": owner.id, "name": owner.display_name} if owner else None,
+            "updated_at": str(a.updated_at)})
+    return result
 
 @app.post("/admin/apps/{app_id}/unpublish")
 def admin_unpublish_app(app_id: str, body: UnpublishRequest,
@@ -1715,21 +1531,11 @@ def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_a
     app_id_for_script = req.app_id or "com.example.YourApp"
     manifest_name = f"{app_id_for_script}.yml"
 
-    trial_notice = (
-        "\n"
-        "# ⚠️  TRIAL PUBLISHING — 24-HOUR WINDOW\n"
-        "# Your GPG signing key expires in 24 hours.\n"
-        "# To get a permanent key and Verified badge, complete identity\n"
-        "# verification at https://admin.agl-store.cyou/developer/portal\n"
-        "\n"
-    ) if req.is_trial else ""
-
     build_script = (
         "#!/bin/bash\n"
         "# AGL App Store - Build & Publish Script\n"
         f"# Developer: {req.developer_name}\n"
         f"# App ID   : {app_id_for_script}\n"
-        f"{trial_notice}"
         "#\n"
         "set -euo pipefail\n\n"
         f'APP_ID="{app_id_for_script}"\n'
@@ -1737,12 +1543,9 @@ def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_a
         'BUILD_DIR="flatpak_build"\n'
         'REPO_DIR="repo"\n'
         f'FLAT_MANAGER_URL="{FLAT_MANAGER_URL}"\n'
-        f'FLAT_MANAGER_TOKEN="{token}"\n'
-        '# Set your AGL Store developer JWT (from the admin when you were onboarded)\n'
-        'AGL_STORE_TOKEN="${AGL_STORE_TOKEN:-}"\n'
-        f'AGL_STORE_URL="https://api.agl-store.cyou"\n\n'
-        'echo "[1/6] Checking prerequisites..."\n'
-        'for cmd in flatpak flatpak-builder flat-manager-client curl; do\n'
+        f'FLAT_MANAGER_TOKEN="{token}"\n\n'
+        'echo "[1/5] Checking prerequisites..."\n'
+        'for cmd in flatpak flatpak-builder flat-manager-client curl python3; do\n'
         '    if ! command -v "$cmd" &>/dev/null; then\n'
         '        echo "ERROR: $cmd not found."\n'
         '        echo "  Ubuntu/Debian: sudo apt install flatpak flatpak-builder"\n'
@@ -1750,85 +1553,28 @@ def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_a
         '        exit 1\n'
         '    fi\n'
         'done\n\n'
-        'echo "[2/6] Building Flatpak..."\n'
+        'echo "[2/5] Building Flatpak..."\n'
         'flatpak-builder --force-clean --repo="$REPO_DIR" "$BUILD_DIR" "$MANIFEST"\n\n'
-        'echo "[3/6] Creating build slot on AGL hub..."\n'
-        'BUILD_URL=$(flat-manager-client --token "$FLAT_MANAGER_TOKEN" create "$FLAT_MANAGER_URL" stable "$APP_ID")\n'
-        'BUILD_ID=$(echo "$BUILD_URL" | grep -oP "build/\\K[0-9]+")\n'
-        'echo "  Build URL : $BUILD_URL"\n'
-        'echo "  Build ID  : $BUILD_ID"\n\n'
-        'echo "[4/6] Uploading build to AGL hub..."\n'
-        'flat-manager-client --token "$FLAT_MANAGER_TOKEN" push "$BUILD_URL" "./$REPO_DIR"\n\n'
-        'echo "[5/6] Committing build (waits for OSTree ingest)..."\n'
-        'flat-manager-client --token "$FLAT_MANAGER_TOKEN" commit --wait "$BUILD_URL"\n\n'
-        'echo "[6/6] Submitting app for admin review..."\n'
-        'if [ -z "$AGL_STORE_TOKEN" ]; then\n'
-        '  echo "WARNING: AGL_STORE_TOKEN not set — skipping auto-submit."\n'
-        '  echo "  Set it: export AGL_STORE_TOKEN=<your-jwt>"\n'
-        '  echo "  Then run: curl -sf -X POST $AGL_STORE_URL/developer/submit \\"\n'
-        f'  echo "    -H \\"Authorization: Bearer \\$AGL_STORE_TOKEN\\" \\"\n'
-        '  echo "    -H \\"Content-Type: application/json\\" \\"\n'
-        f'  echo "    -d \\"{{\\\"app_id\\\":\\\"$APP_ID\\\",\\\"flatpak_build_id\\\":$BUILD_ID,\\\"flatpak_build_url\\\":\\\"$BUILD_URL\\\"}}\\""\n'
-        'else\n'
-        f'  SUBMIT_RESP=$(curl -sf -X POST "$AGL_STORE_URL/developer/submit" \\\n'
-        '    -H "Authorization: Bearer $AGL_STORE_TOKEN" \\\n'
+        'echo "[3/5] Creating build slot on AGL hub..."\n'
+        'BUILD_ID=$(curl -sf -X POST "$FLAT_MANAGER_URL/api/v1/build" \\\n'
+        '    -H "Authorization: Bearer $FLAT_MANAGER_TOKEN" \\\n'
         '    -H "Content-Type: application/json" \\\n'
-        '    -d "{\"app_id\":\"$APP_ID\",\"flatpak_build_id\":$BUILD_ID,\"flatpak_build_url\":\"$BUILD_URL\"}")\n'
-        '  echo "  Submission response: $SUBMIT_RESP"\n'
-        'fi\n'
+        "    -d '{\"repo\":\"stable\"}' | python3 -c \"import sys,json; print(json.load(sys.stdin)['id'])\")\n"
+        'echo "  Build ID: $BUILD_ID"\n\n'
+        'echo "[4/5] Uploading build..."\n'
+        'flat-manager-client push \\\n'
+        '    --token "$FLAT_MANAGER_TOKEN" \\\n'
+        '    "$FLAT_MANAGER_URL" "$BUILD_ID" "./$REPO_DIR"\n\n'
+        'echo "[5/5] Committing (triggers AGL review pipeline)..."\n'
+        'curl -sf -X POST "$FLAT_MANAGER_URL/api/v1/build/$BUILD_ID/commit" \\\n'
+        '    -H "Authorization: Bearer $FLAT_MANAGER_TOKEN"\n'
         'echo ""\n'
-        'echo "Done! Your build is in the AGL review queue."\n'
-        'echo "Build ID $BUILD_ID will be published once an admin approves."\n'
-    )
-
-    # Generate trial GPG key (1-day) for unverified developers
-    trial_gpg = None
-    if req.is_trial and req.app_id:
-        try:
-            _fp, _pub, _uid = _generate_gpg_key(
-                req.app_id, req.app_id.split(".")[-1], req.developer_name,
-                expire_days=1)
-            trial_gpg = {"fingerprint": _fp, "public_key": _pub, "uid": _uid}
-        except Exception as _e:
-            trial_gpg = {"error": str(_e)}
-
-    # Flutter Flatpak manifest
-    flutter_manifest = (
-        f"# Flutter Flatpak manifest for {app_id_for_script}\n"
-        "# Prerequisites: flatpak-builder, flutter SDK, org.freedesktop.Platform//23.08\n"
-        "# Install runtime: flatpak install flathub org.freedesktop.Platform//23.08 org.freedesktop.Sdk//23.08\n\n"
-        f"app-id: {app_id_for_script}\n"
-        "runtime: org.freedesktop.Platform\n"
-        "runtime-version: '23.08'\n"
-        "sdk: org.freedesktop.Sdk\n"
-        f"command: {app_id_for_script.split('.')[-1].lower()}\n\n"
-        "finish-args:\n"
-        "  - --socket=wayland\n"
-        "  - --socket=fallback-x11\n"
-        "  - --socket=pulseaudio\n"
-        "  - --share=network\n"
-        "  - --share=ipc\n"
-        "  - --device=dri\n\n"
-        "modules:\n"
-        "  - name: flutter-app\n"
-        "    buildsystem: simple\n"
-        "    sources:\n"
-        "      - type: git\n"
-        "        url: .\n"
-        "        branch: main\n"
-        "    build-commands:\n"
-        "      - flutter build linux --release\n"
-        f"      - cp -r build/linux/x64/release/bundle /app/lib/{app_id_for_script}\n"
-        f"      - install -Dm755 /dev/stdin /app/bin/{app_id_for_script.split('.')[-1].lower()} <<'EOF'\n"
-        "#!/bin/sh\n"
-        f"exec /app/lib/{app_id_for_script}/$(basename $(ls /app/lib/{app_id_for_script}/*.so | head -1 | sed 's/.so//')) \"$@\"\n"
-        "EOF\n"
+        'echo "Done! Your app will appear at https://agl-store.cyou after review."\n'
     )
 
     sample_manifest = (
         f"# Example Flatpak manifest — rename to {manifest_name}\n"
-        "# Reference: https://docs.flatpak.org/en/latest/manifests.html\n"
-        "# For Flutter apps, use the flutter_manifest field instead.\n\n"
+        "# Reference: https://docs.flatpak.org/en/latest/manifests.html\n\n"
         f"app-id: {app_id_for_script}\n"
         "runtime: org.gnome.Platform\n"
         "runtime-version: '45'\n"
@@ -1850,28 +1596,21 @@ def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_a
         "      - chmod +x /app/bin/app.py\n"
     )
 
-    resp = {
+    return {
         "token": token,
         "developer_name": req.developer_name,
         "role": req.role,
         "flat_manager_url": FLAT_MANAGER_URL,
         "app_id": req.app_id,
-        "is_trial": req.is_trial,
         "build_script": build_script,
         "sample_manifest": sample_manifest,
-        "flutter_manifest": flutter_manifest,
         "instructions": (
             f"1. Save build_script as publish.sh and chmod +x publish.sh\n"
             f"2. Save sample_manifest as {manifest_name} (edit to match your app)\n"
-            f"   For Flutter: use flutter_manifest instead\n"
             f"3. Run: ./publish.sh\n"
             f"4. Your app will be reviewed and published to agl-store.cyou"
         ),
     }
-    if trial_gpg:
-        resp["trial_gpg"] = trial_gpg
-        resp["trial_expires_in"] = "24 hours"
-    return resp
 
 @app.post("/developer/register-app")
 def register_app(req: RegisterAppRequest, db: Session = Depends(get_db)):
@@ -1889,7 +1628,7 @@ def list_developer_apps(developer: str = Query(...), db: Session = Depends(get_d
     return [{"id": a.id, "name": a.name, "type": a.type, "updated_at": a.updated_at} for a in apps_list]
 
 @app.get("/admin/pending-apps")
-def list_pending_apps(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def list_pending_apps(_: bool = Depends(require_admin_key), db: Session = Depends(get_db)):
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
     apps_list = db.query(App).filter(App.added_at >= cutoff).order_by(App.added_at.desc()).limit(50).all()
     return [{"id": a.id, "name": a.name, "developer_name": a.developer_name, "type": a.type, "added_at": a.added_at} for a in apps_list]
