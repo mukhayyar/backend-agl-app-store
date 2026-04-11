@@ -48,5 +48,27 @@ services:
           memory: 1G
           cpus: "2.0"
 
+  # gRPC-Web proxy: translates browser gRPC-Web → gRPC and forwards to backend:50051
+  envoy:
+    build:
+      context: .
+      dockerfile: envoy.Dockerfile
+    container_name: agl_envoy
+    restart: always
+    volumes:
+      - ./envoy.docker.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8090:8090"
+    depends_on:
+      - backend
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grpc-web.entryPoints=http
+      - traefik.http.routers.grpc-web.rule=Host(`grpc.agl-store.cyou`)
+      - traefik.http.routers.grpc-web.service=grpc-web
+      - traefik.http.services.grpc-web.loadbalancer.server.port=8090
+    networks:
+      - default
+
 volumes:
   postgres_data:
