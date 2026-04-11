@@ -23,3 +23,7 @@ __pycache__/
 
 # Logs
 *.log
+
+# Pre-built binaries (arch-specific, copied by setup.sh)
+docker/flat-manager/flat-manager-client
+docker/flat-manager/gentoken

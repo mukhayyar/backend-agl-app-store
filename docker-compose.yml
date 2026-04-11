@@ -24,6 +24,7 @@ x-backend-env: &backend-env
   POPULATE_APPSTREAM_SCRIPT: /app/populate_appstream.py
   GENTOKEN_BIN: /usr/local/bin/gentoken
   FLATPAK_REPO_PATH: ${FLATPAK_REPO_PATH:-/srv/flatpak-repo}
+  APP_ROOT_DIR: /app
 
 services:
   postgres:
@@ -82,6 +83,7 @@ services:
       <<: *backend-env
     volumes:
       - ${FLATPAK_REPO_PATH:-/srv/flatpak-repo}:/srv/flatpak-repo
+      APP_ROOT_DIR: /app
       - gnupg_data:/root/.gnupg
       - ./populate_appstream.py:/app/populate_appstream.py:ro
       - ./docker/flat-manager/gentoken:/usr/local/bin/gentoken:ro
@@ -104,6 +106,7 @@ services:
       RUST_LOG: info
     volumes:
       - ${FLATPAK_REPO_PATH:-/srv/flatpak-repo}:/srv/flatpak-repo
+      APP_ROOT_DIR: /app
       - gnupg_data:/root/.gnupg
       - ./docker/flat-manager/config.json:/etc/flat-manager/config.json:ro
     depends_on:
@@ -117,6 +120,7 @@ services:
     restart: unless-stopped
     volumes:
       - ${FLATPAK_REPO_PATH:-/srv/flatpak-repo}:/usr/share/nginx/html:ro
+      APP_ROOT_DIR: /app
       - ./docker/repo-server/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - agl_net

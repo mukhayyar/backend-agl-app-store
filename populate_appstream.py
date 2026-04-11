@@ -16,9 +16,11 @@ from xml.dom import minidom
 # ── DB query ──────────────────────────────────────────────────────────────────
 import subprocess
 
+_db_url = os.environ.get("DATABASE_URL", "postgresql://pensagl:CHANGE_ME_DB_PASSWORD@localhost/agl_store")
+
 PSQL_CMD = [
     "psql",
-    "postgresql://pensagl:CHANGE_ME_DB_PASSWORD@localhost/agl_store",
+    _db_url,
     "-t", "-A", "-F", "\t",
     "-c",
     """

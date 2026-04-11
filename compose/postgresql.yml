@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  # Define the PostgreSQL service
+  postgres:
+    # Use the official PostgreSQL image, often with a tag like 16-alpine for a smaller image
+    image: postgres:17-alpine
+    container_name: postgres_db
+    restart: always
+
+    # Environment variables for initial database setup
+    environment:
+      POSTGRES_USER: pensagl         # The default user
+      POSTGRES_PASSWORD: CHANGE_ME_DB_PASSWORD   # The password for the user
+      POSTGRES_DB: agl_store     # The default database to create
+
+    # Map the container port 5432 (default for PostgreSQL) to a port on your host machine
+    # You can change the host port (left side) if 5432 is already in use.
+    ports:
+      - "5432:5432"
+
+    # Configure volumes for data persistence
+    volumes:
+      # Creates a named volume to store database data persistently 
+      - postgres_data:/var/lib/postgresql/data
+      # Optional: Mount a folder with initialization scripts
+      # - ./init:/docker-entrypoint-initdb.d/ 
+
+# Define the named volume
+volumes:
+  postgres_data:
