@@ -1,0 +1,1184 @@
+syntax = "proto3";
+
+package flathub;
+
+import "google/protobuf/empty.proto";
+
+service FlathubService {
+  // App endpoints
+  rpc GetEolRebase(google.protobuf.Empty) returns (EolRebaseResponse);
+  rpc GetEolRebaseAppId(GetEolRebaseAppIdRequest) returns (EolRebaseAppIdResponse);
+  rpc GetEolMessage(google.protobuf.Empty) returns (EolMessageResponse);
+  rpc GetEolMessageAppId(GetEolMessageAppIdRequest) returns (EolMessageAppIdResponse);
+  rpc ListAppstream(ListAppstreamRequest) returns (ListAppstreamResponse);
+  rpc GetAppstream(GetAppstreamRequest) returns (GetAppstreamResponse);
+  rpc GetIsFullscreenApp(GetIsFullscreenAppRequest) returns (GetIsFullscreenAppResponse);
+  rpc SearchApps(SearchAppsRequest) returns (SearchAppsResponse);
+  rpc GetRuntimeList(google.protobuf.Empty) returns (RuntimeListResponse);
+  rpc GetSummary(GetSummaryRequest) returns (SummaryResponse);
+  rpc GetPlatforms(google.protobuf.Empty) returns (PlatformsResponse);
+  rpc GetAddons(GetAddonsRequest) returns (GetAddonsResponse);
+  
+  // Auth endpoints
+  rpc GetLoginMethods(google.protobuf.Empty) returns (LoginMethodsResponse);
+  rpc StartGithubFlow(google.protobuf.Empty) returns (StartOAuthFlowResponse);
+  rpc ContinueGithubFlow(ContinueOAuthFlowRequest) returns (ContinueOAuthFlowResponse);
+  rpc StartGitlabFlow(google.protobuf.Empty) returns (StartOAuthFlowResponse);
+  rpc ContinueGitlabFlow(ContinueOAuthFlowRequest) returns (ContinueOAuthFlowResponse);
+  rpc StartGnomeFlow(google.protobuf.Empty) returns (StartOAuthFlowResponse);
+  rpc ContinueGnomeFlow(ContinueOAuthFlowRequest) returns (ContinueOAuthFlowResponse);
+  rpc StartKdeFlow(google.protobuf.Empty) returns (StartOAuthFlowResponse);
+  rpc ContinueKdeFlow(ContinueOAuthFlowRequest) returns (ContinueOAuthFlowResponse);
+  rpc ContinueGoogleFlow(ContinueOAuthFlowRequest) returns (ContinueOAuthFlowResponse);
+  rpc GetUserInfo(google.protobuf.Empty) returns (UserInfoResponse);
+  rpc RefreshDevFlatpaks(google.protobuf.Empty) returns (RefreshDevFlatpaksResponse);
+  rpc Logout(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc GetDeleteUser(google.protobuf.Empty) returns (GetDeleteUserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  rpc AcceptPublisherAgreement(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ChangeDefaultAccount(ChangeDefaultAccountRequest) returns (google.protobuf.Empty);
+  
+  // Wallet endpoints
+  rpc GetWalletInfo(google.protobuf.Empty) returns (WalletInfoResponse);
+  rpc RemoveCard(RemoveCardRequest) returns (google.protobuf.Empty);
+  rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
+  rpc CreateTransaction(CreateTransactionRequest) returns (CreateTransactionResponse);
+  rpc GetTransactionById(GetTransactionByIdRequest) returns (TransactionResponse);
+  rpc SetTransactionCard(SetTransactionCardRequest) returns (google.protobuf.Empty);
+  rpc CancelTransaction(CancelTransactionRequest) returns (google.protobuf.Empty);
+  rpc GetStripeData(google.protobuf.Empty) returns (StripeKeysResponse);
+  rpc GetTransactionStripeData(GetTransactionStripeDataRequest) returns (TransactionStripeDataResponse);
+  rpc SetSaveCard(SetSaveCardRequest) returns (google.protobuf.Empty);
+  rpc SetPending(SetPendingRequest) returns (google.protobuf.Empty);
+  
+  // Vending endpoints
+  rpc GetVendingStatus(google.protobuf.Empty) returns (VendingStatusResponse);
+  rpc StartOnboarding(StartOnboardingRequest) returns (VendingRedirectResponse);
+  rpc GetDashboardLink(google.protobuf.Empty) returns (VendingRedirectResponse);
+  rpc GetGlobalVendingConfig(google.protobuf.Empty) returns (VendingConfigResponse);
+  rpc GetAppVendingSetup(GetAppVendingSetupRequest) returns (VendingSetupResponse);
+  rpc PostAppVendingSetup(PostAppVendingSetupRequest) returns (VendingSetupResponse);
+  rpc PostAppVendingStatus(PostAppVendingStatusRequest) returns (VendingOutputResponse);
+  rpc GetRedeemableTokens(GetRedeemableTokensRequest) returns (TokenListResponse);
+  rpc CreateTokens(CreateTokensRequest) returns (CreateTokensResponse);
+  rpc CancelTokens(CancelTokensRequest) returns (CancelTokensResponse);
+  rpc RedeemToken(RedeemTokenRequest) returns (RedemptionResultResponse);
+  rpc GetAppInfo(GetAppInfoRequest) returns (VendingApplicationInformationResponse);
+  
+  // Verification endpoints
+  rpc GetVerificationStatus(GetVerificationStatusRequest) returns (VerificationStatusResponse);
+  rpc GetAvailableMethods(GetAvailableMethodsRequest) returns (AvailableMethodsResponse);
+  rpc VerifyByLoginProvider(VerifyByLoginProviderRequest) returns (VerifyByLoginProviderResponse);
+  rpc RequestOrganizationAccessGithub(google.protobuf.Empty) returns (LinkResponse);
+  rpc SetupWebsiteVerification(SetupWebsiteVerificationRequest) returns (WebsiteVerificationTokenResponse);
+  rpc ConfirmWebsiteVerification(ConfirmWebsiteVerificationRequest) returns (WebsiteVerificationResultResponse);
+  rpc Unverify(UnverifyRequest) returns (google.protobuf.Empty);
+  rpc SwitchToDirectUpload(SwitchToDirectUploadRequest) returns (google.protobuf.Empty);
+  rpc Archive(ArchiveRequest) returns (google.protobuf.Empty);
+  
+  // Collection endpoints
+  rpc GetCategories(google.protobuf.Empty) returns (CategoriesResponse);
+  rpc GetCategory(GetCategoryRequest) returns (SearchAppsResponse);
+  rpc GetSubcategory(GetSubcategoryRequest) returns (SearchAppsResponse);
+  rpc GetKeyword(GetKeywordRequest) returns (SearchAppsResponse);
+  rpc GetDevelopers(GetDevelopersRequest) returns (DevelopersResponse);
+  rpc GetDeveloper(GetDeveloperRequest) returns (SearchAppsResponse);
+  rpc GetRecentlyUpdated(GetRecentlyUpdatedRequest) returns (SearchAppsResponse);
+  rpc GetRecentlyAdded(GetRecentlyAddedRequest) returns (SearchAppsResponse);
+  rpc GetVerified(GetVerifiedRequest) returns (SearchAppsResponse);
+  rpc GetMobile(GetMobileRequest) returns (SearchAppsResponse);
+  rpc GetPopularLastMonth(GetPopularLastMonthRequest) returns (SearchAppsResponse);
+  rpc GetTrendingLastTwoWeeks(GetTrendingLastTwoWeeksRequest) returns (SearchAppsResponse);
+  rpc GetMostFavorited(GetMostFavoritedRequest) returns (SearchAppsResponse);
+  
+  // Favorites endpoints
+  rpc AddToFavorites(AddToFavoritesRequest) returns (google.protobuf.Empty);
+  rpc RemoveFromFavorites(RemoveFromFavoritesRequest) returns (google.protobuf.Empty);
+  rpc GetFavorites(google.protobuf.Empty) returns (GetFavoritesResponse);
+  rpc IsFavorited(IsFavoritedRequest) returns (IsFavoritedResponse);
+  
+  // Stats endpoints
+  rpc GetStats(google.protobuf.Empty) returns (StatsResultResponse);
+  rpc GetStatsForApp(GetStatsForAppRequest) returns (StatsResultAppResponse);
+  
+  // Healthcheck
+  rpc Healthcheck(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// Common Messages
+message AppIdRequest {
+  string app_id = 1;
+}
+
+message PaginationRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message PaginationResponse {
+  int32 page = 1;
+  int32 page_size = 2;
+  int32 total = 3;
+  int32 total_pages = 4;
+}
+
+// App-related messages
+message EolRebaseResponse {
+  map<string, StringList> rebase_info = 1;
+}
+
+message StringList {
+  repeated string items = 1;
+}
+
+message GetEolRebaseAppIdRequest {
+  string app_id = 1;
+  string branch = 2;
+}
+
+message EolRebaseAppIdResponse {
+  oneof response {
+    string rebase_info = 1;
+    google.protobuf.Empty not_found = 2;
+  }
+}
+
+message EolMessageResponse {
+  map<string, string> messages = 1;
+}
+
+message GetEolMessageAppIdRequest {
+  string app_id = 1;
+  string branch = 2;
+}
+
+message EolMessageAppIdResponse {
+  oneof response {
+    string message = 1;
+    google.protobuf.Empty not_found = 2;
+  }
+}
+
+message ListAppstreamRequest {
+  string filter = 1;
+  string sort = 2;
+}
+
+message ListAppstreamResponse {
+  repeated string app_ids = 1;
+}
+
+message GetAppstreamRequest {
+  string app_id = 1;
+  string locale = 2;
+}
+
+message GetAppstreamResponse {
+  oneof appstream {
+    DesktopAppstream desktop = 1;
+    AddonAppstream addon = 2;
+    LocalizationAppstream localization = 3;
+    GenericAppstream generic = 4;
+    RuntimeAppstream runtime = 5;
+  }
+}
+
+message GetIsFullscreenAppRequest {
+  string app_id = 1;
+}
+
+message GetIsFullscreenAppResponse {
+  bool is_fullscreen = 1;
+}
+
+message SearchAppsRequest {
+  string locale = 1;
+  SearchQuery query = 2;
+}
+
+message FacetCount {
+  map<string, int32> values = 1;
+}
+
+message SearchAppsResponse {
+  repeated AppsIndex hits = 1;
+  string query = 2;
+  int32 processing_time_ms = 3;
+  int32 hits_per_page = 4;
+  int32 page = 5;
+  int32 total_pages = 6;
+  int32 total_hits = 7;
+  map<string, FacetCount> facet_distribution = 8;
+  map<string, FacetCount> facet_stats = 9;
+}
+
+message SearchQuery {
+  string query = 1;
+  repeated Filter filters = 2;
+  int32 hits_per_page = 3;
+  int32 page = 4;
+}
+
+message Filter {
+  string filter_type = 1;
+  string value = 2;
+}
+
+message RuntimeListResponse {
+  map<string, int32> runtimes = 1;
+}
+
+message GetSummaryRequest {
+  string app_id = 1;
+  string branch = 2;
+}
+
+message SummaryResponse {
+  repeated string arches = 1;
+  string branch = 2;
+  int64 timestamp = 3;
+  int64 download_size = 4;
+  int64 installed_size = 5;
+  SummaryMetadata metadata = 6;
+}
+
+message PlatformsResponse {
+  map<string, Platform> platforms = 1;
+}
+
+message GetAddonsRequest {
+  string app_id = 1;
+}
+
+message GetAddonsResponse {
+  repeated string addons = 1;
+}
+
+message DesktopAppstream {
+  string type = 1;
+  string id = 2;
+  string name = 3;
+  string summary = 4;
+  string description = 5;
+  string developer_name = 6;
+  string icon = 7;
+  repeated Icon icons = 8;
+  repeated Screenshot screenshots = 9;
+  repeated Release releases = 10;
+  ContentRating content_rating = 11;
+  Urls urls = 12;
+  repeated string categories = 13;
+  repeated string kudos = 14;
+  repeated string keywords = 15;
+  repeated string mimetypes = 16;
+  string project_license = 17;
+  repeated Provides provides = 18;
+  Launchable launchable = 19;
+  Bundle bundle = 20;
+  Translation translation = 21;
+  Metadata metadata = 22;
+  bool is_free_license = 23;
+  bool is_mobile_friendly = 24;
+  repeated Branding branding = 25;
+}
+
+message AppsIndex {
+  string name = 1;
+  repeated string keywords = 2;
+  string summary = 3;
+  string description = 4;
+  string id = 5;
+  string type = 6;
+  map<string, MapString> translations = 7;
+  string project_license = 8;
+  bool is_free_license = 9;
+  string app_id = 10;
+  string icon = 11;
+  repeated string main_categories = 12;
+  repeated string sub_categories = 13;
+  string developer_name = 14;
+  bool verification_verified = 15;
+  string verification_method = 16;
+  string verification_login_name = 17;
+  string verification_login_provider = 18;
+  bool verification_login_is_organization = 19;
+  string verification_website = 20;
+  string verification_timestamp = 21;
+  string runtime = 22;
+  int64 updated_at = 23;
+  repeated string arches = 24;
+  int64 added_at = 25;
+  double trending = 26;
+  int64 installs_last_month = 27;
+  int64 favorites_count = 28;
+  bool is_mobile_friendly = 29;
+}
+
+message MapString {
+  map<string, StringOrArray> values = 1;
+}
+
+message StringOrArray {
+  oneof value {
+    string string_value = 1;
+    StringArray array_value = 2;
+  }
+}
+
+message StringArray {
+  repeated string items = 1;
+}
+
+// Auth and User messages
+message LoginMethodsResponse {
+  repeated LoginMethod methods = 1;
+}
+
+message LoginMethod {
+  string method = 1;
+  string name = 2;
+}
+
+message StartOAuthFlowResponse {
+  string redirect_url = 1;
+  string state = 2;
+}
+
+message ContinueOAuthFlowRequest {
+  oneof response {
+    OAuthLoginResponseSuccess success = 1;
+    OAuthLoginResponseFailure failure = 2;
+  }
+}
+
+message ContinueOAuthFlowResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message OAuthLoginResponseSuccess {
+  string code = 1;
+  string state = 2;
+}
+
+message OAuthLoginResponseFailure {
+  string state = 1;
+  string error = 2;
+  string error_description = 3;
+  string error_uri = 4;
+}
+
+message UserInfoResponse {
+  oneof response {
+    UserInfo user_info = 1;
+    google.protobuf.Empty not_logged_in = 2;
+  }
+}
+
+message UserInfo {
+  string displayname = 1;
+  repeated string dev_flatpaks = 2;
+  repeated string permissions = 3;
+  repeated string owned_flatpaks = 4;
+  repeated string invited_flatpaks = 5;
+  string invite_code = 6;
+  string accepted_publisher_agreement_at = 7;
+  AuthInfo default_account = 8;
+  Auths auths = 9;
+}
+
+message AuthInfo {
+  string login = 1;
+  string avatar = 2;
+}
+
+message Auths {
+  AuthInfo github = 1;
+  AuthInfo gitlab = 2;
+  AuthInfo gnome = 3;
+  AuthInfo kde = 4;
+}
+
+message RefreshDevFlatpaksResponse {
+  repeated string dev_flatpaks = 1;
+}
+
+message GetDeleteUserResponse {
+  string status = 1;
+  string token = 2;
+}
+
+message DeleteUserRequest {
+  string token = 1;
+}
+
+message DeleteUserResponse {
+  string status = 1;
+  string message = 2;
+}
+
+message ChangeDefaultAccountRequest {
+  string provider = 1;
+}
+
+// Wallet messages
+message WalletInfoResponse {
+  string status = 1;
+  repeated PaymentCardInfo cards = 2;
+}
+
+message PaymentCardInfo {
+  string id = 1;
+  string brand = 2;
+  string country = 3;
+  int32 exp_month = 4;
+  int32 exp_year = 5;
+  string last4 = 6;
+}
+
+message RemoveCardRequest {
+  PaymentCardInfo card = 1;
+}
+
+message GetTransactionsRequest {
+  string sort = 1;
+  string since = 2;
+  int32 limit = 3;
+}
+
+message GetTransactionsResponse {
+  repeated TransactionSummary transactions = 1;
+}
+
+message CreateTransactionRequest {
+  NascentTransaction transaction = 1;
+}
+
+message CreateTransactionResponse {
+  string status = 1;
+  string id = 2;
+}
+
+message GetTransactionByIdRequest {
+  string txn = 1;
+}
+
+message TransactionResponse {
+  TransactionSummary summary = 1;
+  PaymentCardInfo card = 2;
+  repeated TransactionRow details = 3;
+  string receipt = 4;
+}
+
+message SetTransactionCardRequest {
+  string txn = 1;
+  PaymentCardInfo card = 2;
+}
+
+message CancelTransactionRequest {
+  string txn = 1;
+}
+
+message StripeKeysResponse {
+  string status = 1;
+  string public_key = 2;
+}
+
+message GetTransactionStripeDataRequest {
+  string txn = 1;
+}
+
+message TransactionStripeDataResponse {
+  string status = 1;
+  string client_secret = 2;
+  PaymentCardInfo card = 3;
+}
+
+message SetSaveCardRequest {
+  string txn = 1;
+  TransactionSaveCard save_card = 2;
+}
+
+message SetPendingRequest {
+  string txn = 1;
+}
+
+message TransactionSaveCard {
+  string save_card = 1; // "off_session", "on_session", or empty
+}
+
+// Transaction models
+message NascentTransaction {
+  NascentTransactionSummary summary = 1;
+  repeated TransactionRow details = 2;
+}
+
+message NascentTransactionSummary {
+  int32 value = 1;
+  string currency = 2;
+  string kind = 3; // "donation" or "purchase"
+}
+
+message TransactionSummary {
+  string id = 1;
+  int32 value = 2;
+  string currency = 3;
+  string kind = 4;
+  string status = 5;
+  string reason = 6;
+  int64 created = 7;
+  int64 updated = 8;
+}
+
+message TransactionRow {
+  string recipient = 1;
+  int32 amount = 2;
+  string currency = 3;
+  string kind = 4;
+}
+
+// Vending messages
+message VendingStatusResponse {
+  string status = 1;
+  bool can_take_payments = 2;
+  bool needs_attention = 3;
+  bool details_submitted = 4;
+}
+
+message StartOnboardingRequest {
+  string return_url = 1;
+}
+
+message VendingRedirectResponse {
+  string status = 1;
+  string target_url = 2;
+}
+
+message VendingConfigResponse {
+  string status = 1;
+  map<string, Platform> platforms = 2;
+  int32 fee_fixed_cost = 3;
+  int32 fee_cost_percent = 4;
+  int32 fee_prefer_percent = 5;
+}
+
+message GetAppVendingSetupRequest {
+  string app_id = 1;
+}
+
+message VendingSetupResponse {
+  string status = 1;
+  string currency = 2;
+  int32 appshare = 3;
+  int32 recommended_donation = 4;
+  int32 minimum_payment = 5;
+}
+
+message PostAppVendingSetupRequest {
+  string app_id = 1;
+  VendingSetupRequest setup = 2;
+}
+
+message PostAppVendingStatusRequest {
+  string app_id = 1;
+  ProposedPayment payment = 2;
+}
+
+message VendingOutputResponse {
+  string status = 1;
+  string transaction = 2;
+}
+
+message GetRedeemableTokensRequest {
+  string app_id = 1;
+}
+
+message TokenListResponse {
+  string status = 1;
+  int32 total = 2;
+  repeated TokenModel tokens = 3;
+}
+
+message CreateTokensRequest {
+  string app_id = 1;
+  repeated string tokens = 2;
+}
+
+message CreateTokensResponse {
+  repeated TokenModel tokens = 1;
+}
+
+message CancelTokensRequest {
+  string app_id = 1;
+  repeated string tokens = 2;
+}
+
+message CancelTokensResponse {
+  repeated TokenCancellation cancellations = 1;
+}
+
+message RedeemTokenRequest {
+  string app_id = 1;
+  string token = 2;
+}
+
+message RedemptionResultResponse {
+  string status = 1;
+  string reason = 2;
+}
+
+message GetAppInfoRequest {
+  string app_id = 1;
+}
+
+message VendingApplicationInformationResponse {
+  string app_id = 1;
+  string kind = 2;
+  string kind_reason = 3;
+  bool foss = 4;
+  string foss_reason = 5;
+}
+
+// Vending data models
+message VendingSetupRequest {
+  string currency = 1;
+  int32 appshare = 2;
+  int32 recommended_donation = 3;
+  int32 minimum_payment = 4;
+}
+
+message ProposedPayment {
+  string currency = 1;
+  int32 amount = 2;
+}
+
+message Platform {
+  string depends = 1;
+  repeated string aliases = 2;
+  int32 keep = 3;
+  string stripe_account = 4;
+}
+
+message TokenModel {
+  string id = 1;
+  string state = 2;
+  string name = 3;
+  string token = 4;
+  string created = 5;
+  string changed = 6;
+}
+
+message TokenCancellation {
+  string token = 1;
+  string status = 2;
+}
+
+// Verification messages
+message GetVerificationStatusRequest {
+  string app_id = 1;
+}
+
+message VerificationStatusResponse {
+  oneof status {
+    VerificationStatusNone none = 1;
+    VerificationStatusManual manual = 2;
+    VerificationStatusWebsite website = 3;
+    VerificationStatusLoginProvider login_provider = 4;
+  }
+}
+
+message GetAvailableMethodsRequest {
+  string app_id = 1;
+  bool new_app = 2;
+}
+
+message AvailableMethodsResponse {
+  repeated AvailableMethod methods = 1;
+  string detail = 2;
+}
+
+message VerifyByLoginProviderRequest {
+  string app_id = 1;
+  bool new_app = 2;
+}
+
+message VerifyByLoginProviderResponse {
+  oneof response {
+    ErrorReturn error = 1;
+    google.protobuf.Empty success = 2;
+  }
+}
+
+message LinkResponse {
+  string link = 1;
+}
+
+message SetupWebsiteVerificationRequest {
+  string app_id = 1;
+  bool new_app = 2;
+}
+
+message WebsiteVerificationTokenResponse {
+  string domain = 1;
+  string token = 2;
+}
+
+message ConfirmWebsiteVerificationRequest {
+  string app_id = 1;
+  bool new_app = 2;
+}
+
+message WebsiteVerificationResultResponse {
+  bool verified = 1;
+  string detail = 2;
+  int32 status_code = 3;
+}
+
+message UnverifyRequest {
+  string app_id = 1;
+}
+
+message SwitchToDirectUploadRequest {
+  string app_id = 1;
+}
+
+message ArchiveRequest {
+  string app_id = 1;
+  string endoflife = 2;
+  string endoflife_rebase = 3;
+}
+
+// Verification data models
+message VerificationStatusNone {
+  bool verified = 1;
+  string method = 2;
+  string detail = 3;
+}
+
+message VerificationStatusManual {
+  bool verified = 1;
+  string timestamp = 2;
+  string method = 3;
+  string detail = 4;
+}
+
+message VerificationStatusWebsite {
+  bool verified = 1;
+  string timestamp = 2;
+  string method = 3;
+  string website = 4;
+  string detail = 5;
+}
+
+message VerificationStatusLoginProvider {
+  bool verified = 1;
+  string timestamp = 2;
+  string method = 3;
+  string login_provider = 4;
+  string login_name = 5;
+  string detail = 6;
+  bool login_is_organization = 7;
+}
+
+message AvailableMethod {
+  string method = 1;
+  string website = 2;
+  string website_token = 3;
+  string login_provider = 4;
+  string login_name = 5;
+  bool login_is_organization = 6;
+  string login_status = 7;
+}
+
+message ErrorReturn {
+  string detail = 1;
+}
+
+// Collection messages
+message CategoriesResponse {
+  repeated string categories = 1;
+}
+
+message GetCategoryRequest {
+  string category = 1;
+  repeated string exclude_subcategories = 2;
+  int32 page = 3;
+  int32 per_page = 4;
+  string locale = 5;
+  string sort_by = 6;
+}
+
+message GetSubcategoryRequest {
+  string category = 1;
+  repeated string subcategory = 2;
+  repeated string exclude_subcategories = 3;
+  int32 page = 4;
+  int32 per_page = 5;
+  string locale = 6;
+  string sort_by = 7;
+}
+
+message GetKeywordRequest {
+  string keyword = 1;
+  int32 page = 2;
+  int32 per_page = 3;
+  string locale = 4;
+}
+
+message GetDevelopersRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+}
+
+message DevelopersResponse {
+  repeated string developers = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 per_page = 4;
+}
+
+message GetDeveloperRequest {
+  string developer = 1;
+  int32 page = 2;
+  int32 per_page = 3;
+  string locale = 4;
+}
+
+message GetRecentlyUpdatedRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string locale = 3;
+}
+
+message GetRecentlyAddedRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string locale = 3;
+}
+
+message GetVerifiedRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string locale = 3;
+}
+
+message GetMobileRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string locale = 3;
+}
+
+message GetPopularLastMonthRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string locale = 3;
+}
+
+message GetTrendingLastTwoWeeksRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string locale = 3;
+}
+
+message GetMostFavoritedRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string locale = 3;
+}
+
+// Favorites messages
+message AddToFavoritesRequest {
+  string app_id = 1;
+}
+
+message RemoveFromFavoritesRequest {
+  string app_id = 1;
+}
+
+message GetFavoritesResponse {
+  repeated FavoriteApp favorites = 1;
+}
+
+message IsFavoritedRequest {
+  string app_id = 1;
+}
+
+message IsFavoritedResponse {
+  bool is_favorited = 1;
+}
+
+message FavoriteApp {
+  string app_id = 1;
+  string created_at = 2;
+}
+
+// Stats messages
+message StatsResultResponse {
+  oneof response {
+    StatsResult stats = 1;
+    google.protobuf.Empty not_available = 2;
+  }
+}
+
+message GetStatsForAppRequest {
+  string app_id = 1;
+  bool all = 2;
+  int32 days = 3;
+}
+
+message StatsResultAppResponse {
+  oneof response {
+    StatsResultApp stats = 1;
+    google.protobuf.Empty not_found = 2;
+  }
+}
+
+message StatsResult {
+  map<string, int64> totals = 1;
+  map<string, int64> countries = 2;
+  map<string, int64> downloads_per_day = 3;
+  map<string, int64> updates_per_day = 4;
+  map<string, int64> delta_downloads_per_day = 5;
+  repeated StatsResultCategoryTotals category_totals = 6;
+}
+
+message StatsResultApp {
+  int64 installs_total = 1;
+  map<string, int64> installs_per_day = 2;
+  map<string, int64> installs_per_country = 3;
+  int64 installs_last_month = 4;
+  int64 installs_last_7_days = 5;
+  string id = 6;
+}
+
+message StatsResultCategoryTotals {
+  string category = 1;
+  int64 count = 2;
+}
+
+// AppStream complex type messages
+message Bundle {
+  string value = 1;
+  string type = 2;
+  string runtime = 3;
+  string sdk = 4;
+}
+
+message Release {
+  string timestamp = 1;
+  string version = 2;
+  string date = 3;
+  string type = 4;
+  string urgency = 5;
+  string description = 6;
+  string url = 7;
+  string date_eol = 8;
+}
+
+message ContentRating {
+  string type = 1;
+  string violence_cartoon = 2;
+  string violence_fantasy = 3;
+  string violence_realistic = 4;
+  string violence_bloodshed = 5;
+  string violence_sexual = 6;
+  string violence_desecration = 7;
+  string violence_slavery = 8;
+  string violence_worship = 9;
+  string drugs_alcohol = 10;
+  string drugs_narcotics = 11;
+  string drugs_tobacco = 12;
+  string sex_nudity = 13;
+  string sex_themes = 14;
+  string sex_homosexuality = 15;
+  string sex_prostitution = 16;
+  string sex_adultery = 17;
+  string sex_appearance = 18;
+  string language_profanity = 19;
+  string language_humor = 20;
+  string language_discrimination = 21;
+  string social_chat = 22;
+  string social_info = 23;
+  string social_audio = 24;
+  string social_location = 25;
+  string social_contacts = 26;
+  string money_purchasing = 27;
+  string money_gambling = 28;
+}
+
+message Urls {
+  string bugtracker = 1;
+  string homepage = 2;
+  string help = 3;
+  string donation = 4;
+  string translate = 5;
+  string faq = 6;
+  string contact = 7;
+  string vcs_browser = 8;
+  string contribute = 9;
+}
+
+message Icon {
+  string url = 1;
+  int32 width = 2;
+  int32 height = 3;
+  int32 scale = 4;
+  string type = 5;
+}
+
+message ScreenshotSize {
+  string width = 1;
+  string height = 2;
+  string scale = 3;
+  string src = 4;
+}
+
+message Screenshot {
+  repeated ScreenshotSize sizes = 1;
+  string caption = 2;
+  bool default = 3;
+}
+
+message Provides {
+  string value = 1;
+  string type = 2;
+}
+
+message Launchable {
+  string value = 1;
+  string type = 2;
+}
+
+message Translation {
+  string value = 1;
+  string type = 2;
+}
+
+message Metadata {
+  string flathub_manifest = 1;
+  bool flathub_verification_verified = 2;
+  string flathub_verification_method = 3;
+  string flathub_verification_login_name = 4;
+  string flathub_verification_login_provider = 5;
+  string flathub_verification_website = 6;
+  string flathub_verification_timestamp = 7;
+  bool flathub_verification_login_is_organization = 8;
+}
+
+message Branding {
+  string value = 1;
+  string scheme_preference = 2;
+  string type = 3;
+}
+
+message AddonAppstream {
+  string type = 1;
+  string id = 2;
+  string name = 3;
+  string summary = 4;
+  repeated Release releases = 5;
+  ContentRating content_rating = 6;
+  Urls urls = 7;
+  repeated string categories = 8;
+  string icon = 9;
+  repeated Icon icons = 10;
+  string developer_name = 11;
+  string project_license = 12;
+  string extends = 13;
+  Bundle bundle = 14;
+  Metadata metadata = 15;
+  bool is_mobile_friendly = 16;
+  bool is_free_license = 17;
+}
+
+message LocalizationAppstream {
+  string type = 1;
+  string id = 2;
+  string name = 3;
+  string summary = 4;
+  repeated Release releases = 5;
+  Urls urls = 6;
+  repeated string categories = 7;
+  string icon = 8;
+  repeated Icon icons = 9;
+  string developer_name = 10;
+  string project_license = 11;
+  Bundle bundle = 12;
+  Metadata metadata = 13;
+  bool is_mobile_friendly = 14;
+  bool is_free_license = 15;
+}
+
+message GenericAppstream {
+  string type = 1;
+  string id = 2;
+  string name = 3;
+  string summary = 4;
+  repeated Release releases = 5;
+  Urls urls = 6;
+  repeated string categories = 7;
+  string icon = 8;
+  repeated Icon icons = 9;
+  string developer_name = 10;
+  string project_license = 11;
+  Bundle bundle = 12;
+  Metadata metadata = 13;
+  bool is_mobile_friendly = 14;
+  bool is_free_license = 15;
+}
+
+message RuntimeAppstream {
+  string type = 1;
+  string id = 2;
+  string name = 3;
+  string summary = 4;
+  string description = 5;
+  repeated Release releases = 6;
+  Urls urls = 7;
+  repeated string categories = 8;
+  string icon = 9;
+  repeated Icon icons = 10;
+  string developer_name = 11;
+  string project_license = 12;
+  Bundle bundle = 13;
+  Metadata metadata = 14;
+  bool is_mobile_friendly = 15;
+  bool is_free_license = 16;
+}
+
+// Summary messages
+message SummaryMetadata {
+  string name = 1;
+  string runtime = 2;
+  string sdk = 3;
+  repeated string tags = 4;
+  string command = 5;
+  SummaryPermissions permissions = 6;
+  map<string, SummaryExtension> extensions = 7;
+  repeated string built_extensions = 8;
+  SummaryExtraData extra_data = 9;
+  bool runtime_is_eol = 10;
+}
+
+message SummaryPermissions {
+  repeated string shared = 1;
+  repeated string sockets = 2;
+  repeated string devices = 3;
+  repeated string filesystems = 4;
+  map<string, StringArray> session_bus = 5;
+}
+
+message SummaryExtension {
+  string directory = 1;
+  string autodelete = 2;
+  string no_autodownload = 3;
+  string version = 4;
+  string versions = 5;
+}
+
+message SummaryExtraData {
+  string name = 1;
+  string checksum = 2;
+  string size = 3;
+  string uri = 4;
+}

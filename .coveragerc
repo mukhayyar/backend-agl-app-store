@@ -1,0 +1,17 @@
+[run]
+source = .
+omit =
+    .venv/*
+    generated/*
+    tests/*
+    alembic/*
+    server/*
+    app.py
+    main.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__
+    pass
+show_missing = true
