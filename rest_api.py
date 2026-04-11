@@ -1161,39 +1161,25 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
         ConnectedAccount.provider_user_id == int(gh_id),
     ).first()
 
-    if account:
-        user = account.user
-        account.login = gh_login
-        account.avatar_url = gh_avatar
-        account.display_name = gh_name
-        account.email = gh_email
-        account.last_used = now
-    else:
-        # Create new user
-        user = User(
-            display_name=gh_name,
-            default_account_provider="github",
-            default_account_login=gh_login,
-            invite_code=secrets.token_urlsafe(8),
-            auth_provider="github",
-            created_at=now,
-            updated_at=now,
-            role="developer",  # default role for OAuth signups
-        )
-        db.add(user)
-        db.flush()
-        account = ConnectedAccount(
-            user_id=user.id,
-            provider="github",
-            provider_user_id=int(gh_id),
-            login=gh_login,
-            avatar_url=gh_avatar,
-            display_name=gh_name,
-            email=gh_email,
-            last_used=now,
-            created_at=now,
-        )
-        db.add(account)
+    if not account:
+        # Admin OAuth: no auto-signup — GitHub account must be pre-linked to an admin user
+        error_msg = urllib.parse.quote("No admin account is linked to this GitHub profile. Ask your system administrator to link your GitHub account first.")
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error={error_msg}", status_code=302)
+
+    user = account.user
+
+    # Only admin and reviewer roles may access the admin panel via GitHub OAuth
+    user_role = getattr(user, "role", "developer")
+    if user_role not in ("admin", "reviewer"):
+        error_msg = urllib.parse.quote(f"Your account ({gh_login}) has role '{user_role}' and cannot access the admin panel.")
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error={error_msg}", status_code=302)
+
+    # Update linked account metadata
+    account.login = gh_login
+    account.avatar_url = gh_avatar
+    account.display_name = gh_name
+    account.email = gh_email
+    account.last_used = now
 
     db.commit()
     db.refresh(user)
@@ -1205,6 +1191,115 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
     frontend_url = f"{FRONTEND_ADMIN_URL}/#github_token={jwt_token}"
     return RedirectResponse(frontend_url, status_code=302)
 
+
+
+@app.get("/auth/github/link")
+def github_link_start(admin: User = Depends(_require_jwt_admin)):
+    """Start GitHub OAuth flow to link a GitHub account to the current admin user."""
+    if not GITHUB_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+    state = secrets.token_urlsafe(16)
+    callback_url = f"{FRONTEND_ADMIN_URL}/api/auth/github/link-callback"
+    params = urllib.parse.urlencode({
+        "client_id": GITHUB_CLIENT_ID,
+        "redirect_uri": callback_url,
+        "scope": GITHUB_OAUTH_SCOPES,
+        "state": state,
+    })
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(f"https://github.com/login/oauth/authorize?{params}")
+
+
+@app.get("/auth/github/link-callback")
+def github_link_callback(code: str, state: str = "", token: str = Query(None), db: Session = Depends(get_db)):
+    """GitHub redirects here after linking. token= is the admin JWT passed as query param."""
+    import json as _json
+    # Validate the admin JWT from query param (passed by frontend)
+    if not token:
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=missing_token", status_code=302)
+    try:
+        payload = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload["sub"]
+        role = payload.get("role", "developer")
+    except Exception:
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=invalid_token", status_code=302)
+    if role not in ("admin", "reviewer"):
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=not_admin", status_code=302)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=user_not_found", status_code=302)
+
+    # Exchange code for token
+    token_req = urllib.request.Request(
+        "https://github.com/login/oauth/access_token",
+        data=urllib.parse.urlencode({
+            "client_id": GITHUB_CLIENT_ID,
+            "client_secret": GITHUB_CLIENT_SECRET,
+            "code": code,
+        }).encode(),
+        headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(token_req, timeout=10) as resp:
+            token_data = _json.loads(resp.read())
+    except Exception as ex:
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=github_exchange_failed", status_code=302)
+
+    gh_token = token_data.get("access_token")
+    if not gh_token:
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=no_github_token", status_code=302)
+
+    # Get GitHub user info
+    user_req = urllib.request.Request(
+        "https://api.github.com/user",
+        headers={"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.urlopen(user_req, timeout=10) as resp:
+            gh_user = _json.loads(resp.read())
+    except Exception:
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=github_user_failed", status_code=302)
+
+    gh_id = int(gh_user.get("id", 0))
+    gh_login = gh_user.get("login", "")
+    gh_name = gh_user.get("name") or gh_login
+    gh_email = gh_user.get("email", "")
+    gh_avatar = gh_user.get("avatar_url", "")
+    now = datetime.datetime.utcnow()
+
+    # Check if this GitHub account is already linked to a different user
+    existing = db.query(ConnectedAccount).filter(
+        ConnectedAccount.provider == "github",
+        ConnectedAccount.provider_user_id == gh_id,
+    ).first()
+    if existing and existing.user_id != user_id:
+        error_msg = urllib.parse.quote(f"GitHub account @{gh_login} is already linked to a different user.")
+        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error={error_msg}", status_code=302)
+
+    if existing:
+        existing.login = gh_login
+        existing.avatar_url = gh_avatar
+        existing.display_name = gh_name
+        existing.email = gh_email
+        existing.last_used = now
+    else:
+        account = ConnectedAccount(
+            user_id=user_id,
+            provider="github",
+            provider_user_id=gh_id,
+            login=gh_login,
+            avatar_url=gh_avatar,
+            display_name=gh_name,
+            email=gh_email,
+            last_used=now,
+            created_at=now,
+        )
+        db.add(account)
+
+    db.commit()
+    success_msg = urllib.parse.quote(f"GitHub account @{gh_login} linked successfully.")
+    return RedirectResponse(f"{FRONTEND_ADMIN_URL}/admin/settings#github_linked={success_msg}", status_code=302)
 
 @app.get("/admin/stats")
 def admin_stats(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
