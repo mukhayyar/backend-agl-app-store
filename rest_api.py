@@ -1041,7 +1041,6 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
     try:
         import subprocess as _sp
         _sp.run(["python3", POPULATE_APPSTREAM_SCRIPT], capture_output=True, cwd=APP_ROOT_DIR, timeout=30)
-APP_ROOT_DIR = os.getenv("APP_ROOT_DIR", "/root/agl")
         _sp.run(["flatpak", "build-update-repo", "--generate-static-deltas", "/srv/flatpak-repo"], capture_output=True, timeout=60)
     except Exception:
         pass
@@ -1111,6 +1110,7 @@ GITHUB_OAUTH_SCOPES = "read:user,user:email"
 # ── Flat-manager integration ──────────────────────────────────────────────────
 FLAT_MANAGER_API = os.getenv("FLAT_MANAGER_API", "http://flat-manager:8080")
 FLAT_MANAGER_ADMIN_TOKEN = os.getenv("FLAT_MANAGER_ADMIN_TOKEN", "")
+APP_ROOT_DIR = os.getenv("APP_ROOT_DIR", "/root/agl")
 POPULATE_APPSTREAM_SCRIPT = os.getenv("POPULATE_APPSTREAM_SCRIPT", "/root/agl/populate_appstream.py")
 FRONTEND_ADMIN_URL = os.getenv("FRONTEND_ADMIN_URL", "https://admin.agl-store.cyou")
 
