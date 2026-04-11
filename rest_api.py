@@ -537,7 +537,7 @@ def get_categories(db: Session = Depends(get_db)):
 @app.get("/stats")
 def get_stats(db: Session = Depends(get_db)):
     return {
-        "total_apps": db.query(App).count(),
+        "total_apps": db.query(App).filter(App.published == True).count(),
         "total_users": db.query(User).count(),
         "total_categories": db.query(Category).count(),
     }
