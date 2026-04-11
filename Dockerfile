@@ -1,37 +1,31 @@
 # Build stage
 FROM python:3.12-slim AS builder
-
 WORKDIR /app
-
-# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Runtime stage
 FROM python:3.12-slim
-
 WORKDIR /app
 
-# Install runtime dependencies only
+# System tools required by rest_api.py subprocess calls
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    flatpak \
+    ostree \
+    gpg \
+    gpg-agent \
+    curl \
+    clamav \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy installed packages from builder
 COPY --from=builder /install /usr/local
-
-# Copy application code
 COPY . .
 
-# Don't run as root
-RUN useradd --create-home appuser
-USER appuser
-
-EXPOSE 8000 50051
-
-# Start both HTTP (FastAPI) and gRPC servers via unified entry point
-CMD ["python", "main.py"]
+# Run as root — required for flatpak build-update-repo and ostree refs --delete
+# which write to the mounted /srv/flatpak-repo volume
+EXPOSE 8000 50051 8002
+CMD ["python", "app.py"]

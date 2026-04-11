@@ -1037,6 +1037,15 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
             fm_result = {"warning": str(_fm_err)}
     elif sub.flatpak_build_id and not FLAT_MANAGER_ADMIN_TOKEN:
         print(f"[FM] FLAT_MANAGER_ADMIN_TOKEN not set — skipping publish for build {sub.flatpak_build_id}")
+    # Regenerate appstream to include newly approved app
+    try:
+        import subprocess as _sp
+        _sp.run(["python3", POPULATE_APPSTREAM_SCRIPT], capture_output=True, cwd=APP_ROOT_DIR, timeout=30)
+APP_ROOT_DIR = os.getenv("APP_ROOT_DIR", "/root/agl")
+        _sp.run(["flatpak", "build-update-repo", "--generate-static-deltas", "/srv/flatpak-repo"], capture_output=True, timeout=60)
+    except Exception:
+        pass
+
     # [HOOK] notify approved
     try:
         _app_obj = db.query(App).filter(App.id == sub.app_id).first() if sub.app_id else None
@@ -1100,8 +1109,9 @@ GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 GITHUB_OAUTH_SCOPES = "read:user,user:email"
 
 # ── Flat-manager integration ──────────────────────────────────────────────────
-FLAT_MANAGER_API = os.getenv("FLAT_MANAGER_API", "http://127.0.0.1:8080")
+FLAT_MANAGER_API = os.getenv("FLAT_MANAGER_API", "http://flat-manager:8080")
 FLAT_MANAGER_ADMIN_TOKEN = os.getenv("FLAT_MANAGER_ADMIN_TOKEN", "")
+POPULATE_APPSTREAM_SCRIPT = os.getenv("POPULATE_APPSTREAM_SCRIPT", "/root/agl/populate_appstream.py")
 FRONTEND_ADMIN_URL = os.getenv("FRONTEND_ADMIN_URL", "https://admin.agl-store.cyou")
 
 @app.get("/auth/github/authorize")
@@ -1523,6 +1533,24 @@ def admin_extend_app(app_id: str, body: ExtendRequest,
     return {"message": f"App {app_id} extended", "new_expires_at": str(app_rec.expires_at)}
 
 # ── Internal: Expiry Checker (called by cron) ─────────────────────────────
+@app.post("/internal/rebuild-repo")
+def rebuild_repo(_: bool = Depends(require_admin_key)):
+    """Manually trigger flatpak repo rebuild + appstream regeneration."""
+    import subprocess
+    results = {}
+    r1 = subprocess.run(
+        ["flatpak", "build-update-repo", "--generate-static-deltas", "/srv/flatpak-repo"],
+        capture_output=True, timeout=120
+    )
+    results["flatpak_build_update_repo"] = "ok" if r1.returncode == 0 else r1.stderr.decode()[:200]
+    r2 = subprocess.run(
+        ["python3", POPULATE_APPSTREAM_SCRIPT],
+        capture_output=True, cwd=APP_ROOT_DIR, timeout=60
+    )
+    results["appstream_regen"] = "ok" if r2.returncode == 0 else r2.stderr.decode()[:200]
+    return {"status": "done", "results": results}
+
+
 @app.post("/internal/check-expiry")
 def check_expiry(_: bool = Depends(require_admin_key), db: Session = Depends(get_db)):
     """Cron endpoint: unpublish expired apps, send 30/7 day reminders."""
@@ -1553,6 +1581,26 @@ def check_expiry(_: bool = Depends(require_admin_key), db: Session = Depends(get
             if email:
                 _email_expiry_reminder(email, a.name or a.id, a.id, days_left)
     db.commit()
+
+    # Remove expired apps from OSTree repo + regenerate appstream
+    if unpublished:
+        import subprocess
+        repo = "/srv/flatpak-repo"
+        for app_id in unpublished:
+            ref = f"app/{app_id}/x86_64/master"
+            subprocess.run(
+                ["ostree", "refs", "--repo", repo, "--delete", ref],
+                capture_output=True
+            )
+        subprocess.run(
+            ["flatpak", "build-update-repo", "--generate-static-deltas", repo],
+            capture_output=True
+        )
+        subprocess.run(
+            ["python3", POPULATE_APPSTREAM_SCRIPT],
+            capture_output=True, cwd=APP_ROOT_DIR
+        )
+
     # Also check publisher personal GPG keys
     expired_pub_keys = db.query(DeveloperGpgKey).filter(
         DeveloperGpgKey.is_active == True,
