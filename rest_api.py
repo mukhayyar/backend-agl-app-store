@@ -1281,28 +1281,43 @@ def renew_app(app_id: str, user: User = Depends(_get_dev_user), db: Session = De
 
 # ── Admin: App Lifecycle Management ───────────────────────────────────────
 @app.get("/admin/apps")
-def admin_list_apps(published: Optional[bool] = Query(None),
-    expiring_within_days: Optional[int] = Query(None),
-    admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def admin_list_all_apps(
+    search: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(200, le=500),
+    offset: int = Query(0),
+    admin: User = Depends(_require_jwt_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin: list ALL apps including unpublished and expired."""
+    _now = datetime.datetime.utcnow()
     q = db.query(App)
-    now = datetime.datetime.utcnow()
-    if published is not None:
-        q = q.filter(App.published == published)
-    if expiring_within_days is not None:
-        cutoff = now + datetime.timedelta(days=expiring_within_days)
-        q = q.filter(App.expires_at != None, App.expires_at <= cutoff, App.expires_at >= now)
-    apps_list = q.order_by(App.added_at.desc()).all()
-    result = []
-    for a in apps_list:
-        days_left = (a.expires_at - now).days if a.expires_at else None
-        owner = db.query(User).filter(User.id == a.owner_user_id).first() if a.owner_user_id else None
-        result.append({"id": a.id, "name": a.name, "published": a.published,
-            "expires_at": str(a.expires_at) if a.expires_at else None,
-            "days_until_expiry": days_left, "gpg_fingerprint": a.gpg_fingerprint,
-            "gpg_uid": a.gpg_uid,
-            "owner": {"id": owner.id, "name": owner.display_name} if owner else None,
-            "updated_at": str(a.updated_at)})
-    return result
+    if search:
+        like = f"%{search.lower()}%"
+        q = q.filter(App.name.ilike(like) | App.developer_name.ilike(like) | App.id.ilike(like))
+    if status == "published":
+        q = q.filter(App.published == True).filter((App.expires_at == None) | (App.expires_at > _now))
+    elif status == "unpublished":
+        q = q.filter(App.published == False)
+    elif status == "expired":
+        q = q.filter(App.expires_at != None).filter(App.expires_at <= _now)
+    elif status == "expiring":
+        soon = _now + datetime.timedelta(days=30)
+        q = q.filter(App.published == True).filter(App.expires_at != None).filter(App.expires_at > _now).filter(App.expires_at <= soon)
+    return [
+        {
+            "id": a.id, "name": a.name, "summary": a.summary,
+            "developer_name": a.developer_name, "icon": a.icon, "type": a.type,
+            "published": a.published, "is_verified": bool(a.is_verified),
+            "expires_at": a.expires_at.isoformat() if a.expires_at else None,
+            "added_at": a.added_at.isoformat() if a.added_at else None,
+            "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+            "owner_user_id": a.owner_user_id,
+            "gpg_fingerprint": a.gpg_fingerprint,
+            "categories": [cat.name for cat in a.categories],
+        }
+        for a in q.order_by(App.updated_at.desc()).offset(offset).limit(limit).all()
+    ]
 
 @app.post("/admin/apps/{app_id}/unpublish")
 def admin_unpublish_app(app_id: str, body: UnpublishRequest,
