@@ -120,7 +120,10 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def _verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode(), hashed.encode())
+    try:
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    except ValueError:
+        return False
 
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -713,7 +716,7 @@ def check_email(email: str = Query(...)):
 
 @app.get("/auth/methods")
 def auth_methods():
-    return {"methods": [{"method": "github", "name": "GitHub"}]}
+    return {"methods": [{"method": "github", "name": "GitHub"}, {"method": "email", "name": "Email"}]}
 
 @app.post("/auth/login")
 async def login_github(body: GithubLoginRequest, db: Session = Depends(get_db)):
@@ -781,7 +784,7 @@ async def login_github(body: GithubLoginRequest, db: Session = Depends(get_db)):
 
 @app.get("/auth/user")
 def get_auth_user(user: User = Depends(_require_jwt_user), db: Session = Depends(get_db)):
-    email = _get_user_email(db, user.id)
+    email = user.email or _get_user_email(db, user.id)
     return {
         "id": user.id,
         "display_name": user.display_name,
@@ -1712,7 +1715,7 @@ def list_developer_apps(developer: str = Query(...), db: Session = Depends(get_d
     return [{"id": a.id, "name": a.name, "type": a.type, "updated_at": a.updated_at} for a in apps_list]
 
 @app.get("/admin/pending-apps")
-def list_pending_apps(_: bool = Depends(require_admin_key), db: Session = Depends(get_db)):
+def list_pending_apps(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
     apps_list = db.query(App).filter(App.added_at >= cutoff).order_by(App.added_at.desc()).limit(50).all()
     return [{"id": a.id, "name": a.name, "developer_name": a.developer_name, "type": a.type, "added_at": a.added_at} for a in apps_list]
