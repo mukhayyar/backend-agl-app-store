@@ -64,6 +64,17 @@ def _run_migrations():
                 conn.commit()
             except Exception:
                 conn.rollback()
+        # scan result columns on app_submissions
+        for col, typ in [
+            ("scan_result", "JSONB"),
+            ("scan_at", "TIMESTAMP"),
+            ("scan_verdict", "VARCHAR(20)"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE app_submissions ADD COLUMN IF NOT EXISTS {col} {typ}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 _run_migrations()
 
@@ -2255,25 +2266,39 @@ def scan_submission_endpoint(
     admin: User = Depends(_require_jwt_admin),
     db: Session = Depends(get_db),
 ):
-    """Trigger a full scan for an existing submission (uses stored manifest)."""
+    """Trigger a full scan for an existing submission — checks out OSTree ref and runs ClamAV/Trivy/checksec."""
     import datetime as _dt
     sub = db.query(AppSubmission).filter(AppSubmission.id == submission_id).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    manifest_content = None  # AppSubmission has no manifest storage; scan uses app_id
-    result = _scan_flatpak(
+
+    # Import the new OSTree-aware scanner
+    from flatpak_scanner import scan_ostree_ref as _scan_ostree
+
+    result = _scan_ostree(
         submission_id=submission_id,
-        manifest_content=manifest_content,
+        app_id=sub.app_id,
+        main_repo="/srv/flatpak-repo",
     )
-    # Store on app
+
+    result_dict = _asdict(result)
+
+    # Store on submission
+    sub.scan_result = result_dict
+    sub.scan_verdict = result.verdict
+    sub.scan_at = _dt.datetime.utcnow()
+    db.commit()
+
+    # Also store on App record if it exists
     if sub.app_id:
         app_obj = db.query(App).filter(App.id == sub.app_id).first()
         if app_obj:
-            app_obj.scan_result = _asdict(result)
+            app_obj.scan_result = result_dict
             app_obj.scan_verdict = result.verdict
             app_obj.scan_at = _dt.datetime.utcnow()
             db.commit()
-    return _asdict(result)
+
+    return result_dict
 
 
 @app.get("/admin/scan/submission/{submission_id}/result")
@@ -2286,6 +2311,10 @@ def get_scan_result(
     sub = db.query(AppSubmission).filter(AppSubmission.id == submission_id).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
+    # Check submission's own scan_result first
+    if getattr(sub, "scan_result", None):
+        return sub.scan_result
+    # Fall back to App record
     if sub.app_id:
         app_obj = db.query(App).filter(App.id == sub.app_id).first()
         if app_obj and app_obj.scan_result:

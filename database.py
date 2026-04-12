@@ -310,6 +310,10 @@ class AppSubmission(Base):
     submitter = relationship("User", foreign_keys=[user_id])
     reviewer = relationship("User", foreign_keys=[reviewer_id])
 
+    scan_result = Column(JSON, nullable=True)
+    scan_at = Column(DateTime, nullable=True)
+    scan_verdict = Column(String(20), nullable=True)
+
 
 class DeveloperGpgKey(Base):
     __tablename__ = "developer_gpg_keys"
