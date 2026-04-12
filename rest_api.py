@@ -1551,6 +1551,71 @@ def rebuild_repo(_: bool = Depends(require_admin_key)):
     return {"status": "done", "results": results}
 
 
+
+@app.post("/internal/fix-xa-metadata")
+def fix_xa_metadata(_: bool = Depends(require_admin_key)):
+    """
+    Re-commit every app ref in the OSTree repo with correct xa.metadata.
+    This fixes the 'Commit metadata not matching expected metadata' flatpak error,
+    which happens when commits were pushed without the xa.metadata OSTree key.
+    """
+    import subprocess, shlex
+    repo = "/srv/flatpak-repo"
+    fixed, skipped, failed = [], [], []
+
+    # List all app refs
+    refs_r = subprocess.run(
+        ["ostree", "refs", "--repo", repo],
+        capture_output=True, text=True, timeout=30
+    )
+    app_refs = [r for r in refs_r.stdout.strip().split("\n") if r.startswith("app/")]
+
+    for ref in app_refs:
+        # Read /metadata file content from the commit tree
+        meta_r = subprocess.run(
+            ["ostree", "--repo", repo, "cat", ref, "/metadata"],
+            capture_output=True, text=True, timeout=10
+        )
+        if meta_r.returncode != 0 or not meta_r.stdout.strip():
+            skipped.append({"ref": ref, "reason": "no /metadata file"})
+            continue
+
+        metadata_content = meta_r.stdout.strip()
+
+        # Re-commit same tree with xa.metadata set
+        commit_r = subprocess.run(
+            ["ostree", "--repo", repo, "commit",
+             f"--branch={ref}",
+             f"--tree=ref={ref}",
+             f"--add-metadata-string=xa.metadata={metadata_content}",
+             "--keep-metadata",
+             "-s", f"fix: add xa.metadata to {ref}"],
+            capture_output=True, text=True, timeout=30
+        )
+        if commit_r.returncode == 0:
+            fixed.append(ref)
+        else:
+            failed.append({"ref": ref, "error": commit_r.stderr.strip()[:120]})
+
+    # Rebuild repo with GPG signing
+    rebuild_r = subprocess.run(
+        ["flatpak", "build-update-repo",
+         "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg",
+         "--generate-static-deltas", repo],
+        capture_output=True, text=True, timeout=300
+    )
+    rebuild_ok = rebuild_r.returncode == 0
+
+    return {
+        "status": "done",
+        "fixed": len(fixed),
+        "skipped": len(skipped),
+        "failed": len(failed),
+        "rebuild_repo": "ok" if rebuild_ok else rebuild_r.stderr[:200],
+        "details": {"fixed": fixed, "skipped": skipped, "failed": failed}
+    }
+
+
 @app.post("/internal/check-expiry")
 def check_expiry(_: bool = Depends(require_admin_key), db: Session = Depends(get_db)):
     """Cron endpoint: unpublish expired apps, send 30/7 day reminders."""
