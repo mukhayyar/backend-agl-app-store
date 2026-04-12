@@ -977,7 +977,7 @@ def get_my_submission(sub_id: int, user: User = Depends(_get_dev_user), db: Sess
     sub = db.query(AppSubmission).filter(AppSubmission.id == sub_id, AppSubmission.user_id == user.id).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    return {"id": sub.id, "app_id": sub.app_id, "name": sub.name, "summary": sub.summary, "description": sub.description, "icon": sub.icon, "homepage": sub.homepage, "license": sub.license, "app_type": sub.app_type, "categories": sub.categories, "tags": sub.tags or [], "screenshots": sub.screenshots, "status": sub.status, "rejection_reason": sub.rejection_reason, "submitted_at": str(sub.submitted_at)}
+    return {"id": sub.id, "app_id": sub.app_id, "name": sub.name, "summary": sub.summary, "description": sub.description, "icon": sub.icon, "homepage": sub.homepage, "license": sub.license, "app_type": sub.app_type, "categories": sub.categories or [], "tags": sub.tags or [], "screenshots": sub.screenshots or [], "status": sub.status, "rejection_reason": sub.rejection_reason, "submitted_at": str(sub.submitted_at)}
 
 @app.put("/developer/submissions/{sub_id}")
 def update_submission(sub_id: int, body: SubmitAppRequest, user: User = Depends(_get_dev_user), db: Session = Depends(get_db)):
