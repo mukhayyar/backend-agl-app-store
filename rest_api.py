@@ -23,6 +23,25 @@ from database import (
 # ── Bootstrap ──────────────────────────────────────────────────────────────
 Base.metadata.create_all(bind=engine)
 
+# Column migrations (idempotent — safe to run on every start)
+def _run_migrations():
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        for col, typ in [
+            ("trust_request_reason", "TEXT"),
+            ("trust_request_github", "VARCHAR(500)"),
+            ("trust_request_portfolio", "VARCHAR(500)"),
+            ("trust_request_at", "TIMESTAMP"),
+            ("trust_request_status", "VARCHAR(20)"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {typ}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
+_run_migrations()
+
 app = FastAPI(title="AGL App Store API", version="2.0.0")
 
 app.add_middleware(
@@ -1392,7 +1411,7 @@ def admin_stats(admin: User = Depends(_require_jwt_admin), db: Session = Depends
 @app.get("/admin/users")
 def list_users(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
     users = db.query(User).limit(100).all()
-    return [{"id": u.id, "display_name": u.display_name, "role": getattr(u, "role", "user"), "accepted_publisher_agreement": bool(u.accepted_publisher_agreement_at), "is_trusted_publisher": bool(u.is_trusted_publisher), "trusted_at": str(u.trusted_at) if u.trusted_at else None, "app_count": db.query(App).filter(App.owner_user_id == u.id).count(), "email": getattr(u, "email", None), "email_verified": bool(getattr(u, "email_verified", False)), "is_organization_email": bool(getattr(u, "is_organization_email", False)), "organization_domain": getattr(u, "organization_domain", None), "auth_provider": getattr(u, "auth_provider", "github")} for u in users]
+    return [{"id": u.id, "display_name": u.display_name, "role": getattr(u, "role", "user"), "accepted_publisher_agreement": bool(u.accepted_publisher_agreement_at), "is_trusted_publisher": bool(u.is_trusted_publisher), "trusted_at": str(u.trusted_at) if u.trusted_at else None, "app_count": db.query(App).filter(App.owner_user_id == u.id).count(), "email": getattr(u, "email", None), "email_verified": bool(getattr(u, "email_verified", False)), "is_organization_email": bool(getattr(u, "is_organization_email", False)), "organization_domain": getattr(u, "organization_domain", None), "auth_provider": getattr(u, "auth_provider", "github"), "trust_request_status": getattr(u, "trust_request_status", None), "trust_request_reason": getattr(u, "trust_request_reason", None), "trust_request_github": getattr(u, "trust_request_github", None), "trust_request_portfolio": getattr(u, "trust_request_portfolio", None), "trust_request_at": str(u.trust_request_at) if getattr(u, "trust_request_at", None) else None} for u in users]
 
 @app.put("/admin/users/{user_id}/role")
 def set_user_role(user_id: int, role: str = Query(...), admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
@@ -1727,6 +1746,57 @@ def check_expiry(_: bool = Depends(require_admin_key), db: Session = Depends(get
 
 
 # ── Trusted Publisher Management ──────────────────────────────────────────
+class TrustPublisherRequest(BaseModel):
+    reason: str
+    github_url: Optional[str] = None
+    portfolio_url: Optional[str] = None
+
+@app.post("/auth/request-trusted-publisher")
+def request_trusted_publisher(
+    body: TrustPublisherRequest,
+    user: User = Depends(_get_dev_user),
+    db: Session = Depends(get_db)
+):
+    """Developer submits a request to become a trusted publisher."""
+    if user.is_trusted_publisher:
+        return {"message": "You are already a trusted publisher."}
+    if user.trust_request_status == "pending":
+        raise HTTPException(status_code=400, detail="You already have a pending request.")
+    import datetime
+    user.trust_request_reason = body.reason.strip()[:2000]
+    user.trust_request_github = (body.github_url or "").strip()[:500] or None
+    user.trust_request_portfolio = (body.portfolio_url or "").strip()[:500] or None
+    user.trust_request_at = datetime.datetime.utcnow()
+    user.trust_request_status = "pending"
+    db.commit()
+    # Notify admin via Telegram
+    try:
+        dev_name = user.display_name or f"user{user.id}"
+        msg = (
+            f"🔑 *Trusted Publisher Request*\n\n"
+            f"*Developer:* {dev_name}\n"
+            f"*Email:* {user.email or 'N/A'}\n"
+            f"*Reason:* {user.trust_request_reason[:300]}\n"
+        )
+        if user.trust_request_github:
+            msg += f"*GitHub:* {user.trust_request_github}\n"
+        if user.trust_request_portfolio:
+            msg += f"*Portfolio:* {user.trust_request_portfolio}\n"
+        msg += f"\nReview at admin.agl-store.cyou/admin/users"
+        notify_developer(msg)
+    except Exception:
+        pass
+    return {"message": "Request submitted. An admin will review it shortly."}
+
+@app.get("/auth/my-trust-request")
+def get_my_trust_request(user: User = Depends(_get_dev_user)):
+    """Get the current developer\'s trust request status."""
+    return {
+        "is_trusted_publisher": bool(user.is_trusted_publisher),
+        "trust_request_status": user.trust_request_status,
+        "trust_request_at": str(user.trust_request_at) if user.trust_request_at else None,
+    }
+
 @app.post("/admin/users/{user_id}/trust")
 def trust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
     """Mark a developer as a Trusted Publisher and generate their personal GPG key."""
@@ -1759,6 +1829,7 @@ def trust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin), db:
     user.is_trusted_publisher = True
     user.trusted_at = now
     user.trusted_by = admin.id
+    user.trust_request_status = "approved"
     # Mark all their existing apps as verified
     db.query(App).filter(App.owner_user_id == user_id, App.published == True).update({"is_verified": True})
     db.commit()

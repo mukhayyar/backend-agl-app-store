@@ -99,6 +99,12 @@ class User(Base):
     is_trusted_publisher = Column(Boolean, default=False)
     trusted_at = Column(DateTime, nullable=True)
     trusted_by = Column(Integer, nullable=True)
+    # Trust publisher request
+    trust_request_reason = Column(Text, nullable=True)
+    trust_request_github = Column(String(500), nullable=True)
+    trust_request_portfolio = Column(String(500), nullable=True)
+    trust_request_at = Column(DateTime, nullable=True)
+    trust_request_status = Column(String(20), nullable=True)  # pending / approved / rejected
     
     # Relationships
     developed_apps = relationship("App", secondary=app_developers, back_populates="developers")
