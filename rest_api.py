@@ -39,6 +39,31 @@ def _run_migrations():
                 conn.commit()
             except Exception:
                 conn.rollback()
+        # submission_comments table
+        try:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS submission_comments (
+                    id SERIAL PRIMARY KEY,
+                    submission_id INTEGER NOT NULL REFERENCES app_submissions(id),
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    body TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT now()
+                )
+            """))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        # appeal columns on app_submissions
+        for col, typ in [
+            ("appeal_message", "TEXT"),
+            ("appeal_at", "TIMESTAMP"),
+            ("appeal_status", "VARCHAR(20)"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE app_submissions ADD COLUMN IF NOT EXISTS {col} {typ}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 _run_migrations()
 
@@ -197,6 +222,31 @@ def _get_dev_user(
         if user:
             return user
     raise HTTPException(status_code=401, detail="Authentication required (Bearer or X-Developer-Key)")
+
+def _get_required_user(
+    x_developer_key: str = Header(None),
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+) -> "User":
+    """Like _get_dev_user but works for any authenticated user (dev or admin via Bearer)."""
+    if x_developer_key:
+        token_hash = _hash_token(x_developer_key)
+        record = db.query(DeveloperToken).filter(
+            DeveloperToken.token_hash == token_hash,
+            DeveloperToken.is_active == True,
+        ).first()
+        if not record:
+            raise HTTPException(status_code=401, detail="Invalid developer key")
+        if record.expires_at and record.expires_at < datetime.datetime.utcnow():
+            raise HTTPException(status_code=401, detail="Developer key expired")
+        return record.user
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+        payload = _decode_jwt(token)
+        user = db.query(User).filter(User.id == int(payload["sub"])).first()
+        if user:
+            return user
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 def _get_user_email(db: Session, user_id: int) -> Optional[str]:
     acc = db.query(ConnectedAccount).filter(
@@ -2291,3 +2341,77 @@ def developer_submit_manifest(
     db.commit()
     return _asdict(result)
 
+
+
+# ── Submission Comments ────────────────────────────────────────────────────
+
+class CommentRequest(BaseModel):
+    body: str
+
+@app.get("/submissions/{sub_id}/comments")
+def list_comments(sub_id: int, user: User = Depends(_get_required_user), db: Session = Depends(get_db)):
+    from sqlalchemy import text as _text
+    sub = db.query(AppSubmission).filter(AppSubmission.id == sub_id).first()
+    if not sub:
+        raise HTTPException(404, "Submission not found")
+    if getattr(user, "role", "user") not in ("admin", "reviewer") and sub.user_id != user.id:
+        raise HTTPException(403, "Forbidden")
+    rows = db.execute(
+        _text("SELECT c.id, c.body, c.created_at, u.display_name, u.role FROM submission_comments c JOIN users u ON u.id=c.user_id WHERE c.submission_id=:sid ORDER BY c.created_at ASC"),
+        {"sid": sub_id}
+    ).fetchall()
+    return [{"id": r[0], "body": r[1], "created_at": str(r[2]), "author": r[3], "role": r[4]} for r in rows]
+
+@app.post("/submissions/{sub_id}/comments")
+def add_comment(sub_id: int, body: CommentRequest, user: User = Depends(_get_required_user), db: Session = Depends(get_db)):
+    from sqlalchemy import text as _text
+    sub = db.query(AppSubmission).filter(AppSubmission.id == sub_id).first()
+    if not sub:
+        raise HTTPException(404, "Submission not found")
+    if getattr(user, "role", "user") not in ("admin", "reviewer") and sub.user_id != user.id:
+        raise HTTPException(403, "Forbidden")
+    if not body.body.strip():
+        raise HTTPException(400, "Comment cannot be empty")
+    db.execute(
+        _text("INSERT INTO submission_comments (submission_id, user_id, body) VALUES (:sid, :uid, :body)"),
+        {"sid": sub_id, "uid": user.id, "body": body.body.strip()[:2000]}
+    )
+    db.commit()
+    return {"ok": True}
+
+# ── Appeal ────────────────────────────────────────────────────────────────
+
+class AppealRequest(BaseModel):
+    message: str
+
+@app.post("/developer/submissions/{sub_id}/appeal")
+def appeal_submission(sub_id: int, body: AppealRequest, user: User = Depends(_get_dev_user), db: Session = Depends(get_db)):
+    sub = db.query(AppSubmission).filter(AppSubmission.id == sub_id, AppSubmission.user_id == user.id).first()
+    if not sub:
+        raise HTTPException(404, "Submission not found")
+    if sub.status not in ("pending", "rejected"):
+        raise HTTPException(400, "Can only appeal pending or rejected submissions")
+    if sub.status == "pending":
+        days_pending = (datetime.datetime.utcnow() - sub.submitted_at).days
+        if days_pending < 3:
+            raise HTTPException(400, f"Submission must be pending for at least 3 days before appeal (currently {days_pending} day(s))")
+    if getattr(sub, "appeal_status", None) == "pending":
+        raise HTTPException(409, "Appeal already submitted and under review")
+    sub.appeal_message = body.message.strip()[:2000]
+    sub.appeal_at = datetime.datetime.utcnow()
+    sub.appeal_status = "pending"
+    db.commit()
+    try:
+        notify_developer(f"\U0001f4e2 Appeal from developer on submission #{sub_id} ({sub.name}):\n{body.message[:200]}")
+    except Exception:
+        pass
+    return {"ok": True}
+
+@app.post("/admin/submissions/{sub_id}/appeal/dismiss")
+def dismiss_appeal(sub_id: int, user: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+    sub = db.query(AppSubmission).filter(AppSubmission.id == sub_id).first()
+    if not sub:
+        raise HTTPException(404, "Not found")
+    sub.appeal_status = "dismissed"
+    db.commit()
+    return {"ok": True}
