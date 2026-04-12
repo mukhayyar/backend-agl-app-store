@@ -1535,14 +1535,54 @@ def admin_extend_app(app_id: str, body: ExtendRequest,
 # ── Internal: Expiry Checker (called by cron) ─────────────────────────────
 @app.post("/internal/rebuild-repo")
 def rebuild_repo(_: bool = Depends(require_admin_key)):
-    """Manually trigger flatpak repo rebuild + appstream regeneration."""
+    """Manually trigger flatpak repo rebuild + appstream regeneration.
+    Also repairs xa.metadata on all commits (fixes 'Commit metadata not matching' error)."""
     import subprocess
     results = {}
+    repo = "/srv/flatpak-repo"
+
+    # ── Step 1: Fix xa.metadata on all app commits ──────────────────────────
+    fixed_refs, skipped_refs, failed_refs = [], [], []
+    refs_r = subprocess.run(
+        ["ostree", "refs", "--repo", repo],
+        capture_output=True, text=True, timeout=30
+    )
+    app_refs = [r for r in refs_r.stdout.strip().split("\n") if r.startswith("app/")]
+
+    for ref in app_refs:
+        meta_r = subprocess.run(
+            ["ostree", "--repo", repo, "cat", ref, "/metadata"],
+            capture_output=True, text=True, timeout=10
+        )
+        if meta_r.returncode != 0 or not meta_r.stdout.strip():
+            skipped_refs.append(ref)
+            continue
+        commit_r = subprocess.run(
+            ["ostree", "--repo", repo, "commit",
+             f"--branch={ref}",
+             f"--tree=ref={ref}",
+             f"--add-metadata-string=xa.metadata={meta_r.stdout.strip()}",
+             "--keep-metadata",
+             "-s", f"fix: xa.metadata {ref}"],
+            capture_output=True, text=True, timeout=30
+        )
+        if commit_r.returncode == 0:
+            fixed_refs.append(ref)
+        else:
+            failed_refs.append({"ref": ref, "error": commit_r.stderr.strip()[:80]})
+
+    results["xa_metadata_fixed"] = len(fixed_refs)
+    results["xa_metadata_skipped"] = len(skipped_refs)
+    results["xa_metadata_failed"] = failed_refs
+
+    # ── Step 2: Rebuild repo with GPG signing ───────────────────────────────
     r1 = subprocess.run(
-        ["flatpak", "build-update-repo", "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--generate-static-deltas", "/srv/flatpak-repo"],
+        ["flatpak", "build-update-repo", "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--generate-static-deltas", repo],
         capture_output=True, timeout=120
     )
     results["flatpak_build_update_repo"] = "ok" if r1.returncode == 0 else r1.stderr.decode()[:200]
+
+    # ── Step 3: Regenerate AppStream ────────────────────────────────────────
     r2 = subprocess.run(
         ["python3", POPULATE_APPSTREAM_SCRIPT],
         capture_output=True, cwd=APP_ROOT_DIR, timeout=60
