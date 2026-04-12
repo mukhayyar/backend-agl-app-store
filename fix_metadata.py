@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Inject /metadata into all 50 flatpak OSTree commits that are missing it."""
-import subprocess, tempfile, os
+import subprocess, tempfile, os, shutil
 
 REPO = "/srv/flatpak-repo"
 GPG_KEY = "E9ADCFFF97CE5264"
@@ -82,17 +82,26 @@ for app_id, info in MANIFESTS.items():
         continue
     metadata_content = make_metadata(app_id, info)
     with tempfile.TemporaryDirectory() as tmpdir:
-        meta_path = os.path.join(tmpdir, "metadata")
-        with open(meta_path, "w") as f:
+        # Checkout the existing commit tree
+        checkout_dir = os.path.join(tmpdir, "checkout")
+        r = subprocess.run([
+            "ostree", "--repo="+REPO, "checkout",
+            "--union", ref, checkout_dir
+        ], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"  ERR {app_id} checkout: {r.stderr.strip()[:120]}")
+            continue
+        # Write metadata file at root of checkout
+        with open(os.path.join(checkout_dir, "metadata"), "w") as f:
             f.write(metadata_content)
+        # Commit the directory back with xa.metadata
         r = subprocess.run([
             "ostree", "--repo="+REPO, "commit",
             "--branch="+ref,
-            "--tree=ref="+ref,
-            f"--tree=file={meta_path}",
+            f"--tree=dir={checkout_dir}",
             f"--add-metadata-string=xa.metadata={metadata_content.strip()}",
-            "--keep-metadata", "--no-bindings",
-            "-s", f"Inject metadata for {app_id}"
+            "--no-bindings",
+            f"--subject=Inject metadata for {app_id}"
         ], capture_output=True, text=True)
         if r.returncode == 0:
             fixed += 1
