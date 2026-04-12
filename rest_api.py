@@ -335,6 +335,17 @@ def _create_jwt(user_id: int, role: str) -> str:
     }
     return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+def _decode_jwt(token: str) -> dict:
+    try:
+        return pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except pyjwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# Alias for backward compat
+_make_jwt = _create_jwt
+
 def _create_upload_token(user_id: int, app_id: str, sub_id: int) -> str:
     """48-hour scoped token allowing bundle upload for a specific submission."""
     payload = {
