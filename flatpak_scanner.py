@@ -406,6 +406,165 @@ def scan_submission(
     return result
 
 
+
+import configparser as _configparser
+from pathlib import Path as _Path
+
+def scan_ostree_ref(submission_id: int, app_id: str, main_repo: str = "/srv/flatpak-repo") -> ScanResult:
+    """
+    Checks out app/{app_id}/x86_64/master from OSTree (main repo or build-repo staging)
+    and runs the full scanner on the extracted files.
+    """
+    import tempfile, shutil
+
+    result = ScanResult(submission_id=submission_id)
+    ref = f"app/{app_id}/x86_64/master"
+    build_repo_base = os.path.join(main_repo, "build-repo")
+
+    # --- Find the repo that contains this ref ---
+    repo_used = None
+    # Try main repo first
+    r = subprocess.run(["ostree", f"--repo={main_repo}", "refs"], capture_output=True, text=True)
+    if ref in r.stdout:
+        repo_used = main_repo
+    else:
+        # Search flat-manager build-repo staging dirs (numbered dirs)
+        try:
+            for bd in sorted(_Path(build_repo_base).iterdir()):
+                if not bd.is_dir() or not bd.name.isdigit():
+                    continue
+                r2 = subprocess.run(["ostree", f"--repo={bd}", "refs"], capture_output=True, text=True)
+                if ref in r2.stdout:
+                    repo_used = str(bd)
+                    break
+        except Exception:
+            pass
+
+    if not repo_used:
+        result.add(Finding("HIGH", "source",
+            f"OSTree ref not found: {ref}",
+            f"App '{app_id}' has not been published to the repository yet. "
+            "Ensure the developer has uploaded a valid flatpak bundle."))
+        result.compute_verdict()
+        return result
+
+    # --- Checkout ---
+    tmpdir = tempfile.mkdtemp(prefix="agl-scan-")
+    checkout_dir = os.path.join(tmpdir, "checkout")
+    try:
+        co_r = subprocess.run(
+            ["ostree", f"--repo={repo_used}", "checkout", "--union", ref, checkout_dir],
+            capture_output=True, text=True, timeout=60
+        )
+        if co_r.returncode != 0:
+            result.add(Finding("HIGH", "source", "OSTree checkout failed", co_r.stderr[:300]))
+            result.compute_verdict()
+            return result
+
+        result.manifest_path = os.path.join(checkout_dir, "metadata")
+        result.bundle_path = checkout_dir
+
+        # Record what we scanned
+        commit_r = subprocess.run(
+            ["ostree", f"--repo={repo_used}", "rev-parse", ref],
+            capture_output=True, text=True
+        )
+        commit_hash = commit_r.stdout.strip()[:16]
+        result.add(Finding("INFO", "source",
+            f"OSTree ref: {ref}",
+            f"Repository: {repo_used}\nCommit: {commit_hash}\nCheckout: {checkout_dir}"))
+
+        # --- Parse /metadata INI -> synthetic manifest for permission scan ---
+        metadata_path = os.path.join(checkout_dir, "metadata")
+        if os.path.exists(metadata_path):
+            cfg = _configparser.ConfigParser(strict=False)
+            cfg.read(metadata_path)
+
+            finish_args = []
+            perm_map = {
+                "sockets":    "--socket={}",
+                "filesystems": "--filesystem={}",
+                "shared":     "--share={}",
+                "devices":    "--device={}",
+                "features":   "--allow={}",
+            }
+            if "Context" in cfg:
+                for key, vals in cfg["Context"].items():
+                    if key in perm_map:
+                        for val in vals.rstrip(";").split(";"):
+                            val = val.strip()
+                            if val:
+                                finish_args.append(perm_map[key].format(val))
+            if "Session Bus Policy" in cfg:
+                for name in cfg["Session Bus Policy"]:
+                    policy = cfg["Session Bus Policy"][name]
+                    if policy in ("own", "talk"):
+                        finish_args.append(f"--{policy}-name={name}")
+
+            sdk     = cfg.get("Application", "sdk", fallback="")
+            runtime = cfg.get("Application", "runtime", fallback="")
+            appid   = cfg.get("Application", "name", fallback=app_id)
+
+            synthetic = json.dumps({
+                "app-id": appid,
+                "runtime": runtime,
+                "sdk": sdk,
+                "finish-args": finish_args,
+                "modules": [],
+            })
+            scan_manifest(synthetic, result)
+
+            result.add(Finding("INFO", "manifest",
+                f"Permissions scanned: {len(finish_args)} finish-args",
+                "\n".join(finish_args) if finish_args else "(none -- sandboxed)"))
+        else:
+            result.add(Finding("MEDIUM", "manifest",
+                "/metadata not found in checkout",
+                "Cannot check permissions without metadata file"))
+
+        # --- Scan /files/ ---
+        files_dir = os.path.join(checkout_dir, "files")
+        if os.path.exists(files_dir):
+            # Count binaries
+            elf_files = []
+            for root, _, files in os.walk(files_dir):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "rb") as fp:
+                            magic = fp.read(4)
+                        if magic[:4] == b"\x7fELF":
+                            elf_files.append(fpath)
+                    except Exception:
+                        pass
+
+            result.add(Finding("INFO", "binary",
+                f"Files scanned: {len(elf_files)} ELF binaries found in /files/",
+                "\n".join(os.path.relpath(p, files_dir) for p in elf_files[:20]) if elf_files
+                else "No ELF binaries found -- app may use stub/script binary"))
+
+            # ClamAV
+            _run_clamav(files_dir, result)
+            # Trivy
+            _run_trivy(files_dir, result)
+            # checksec
+            if elf_files:
+                _run_checksec(files_dir, result)
+            else:
+                result.add(Finding("INFO", "binary",
+                    "checksec: skipped (no ELF binaries)",
+                    "App has no compiled ELF binaries to check for hardening flags"))
+        else:
+            result.add(Finding("MEDIUM", "binary",
+                "/files/ directory missing from checkout",
+                "App may have been published without any application files"))
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    result.compute_verdict()
+    return result
+
 # ── CLI usage ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
