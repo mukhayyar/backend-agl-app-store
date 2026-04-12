@@ -1567,6 +1567,7 @@ def rebuild_repo(_: bool = Depends(require_admin_key)):
     )
     app_refs = [r for r in refs_r.stdout.strip().split("\n") if r.startswith("app/")]
 
+    import tempfile, os
     for ref in app_refs:
         meta_r = subprocess.run(
             ["ostree", "--repo", repo, "cat", ref, "/metadata"],
@@ -1575,15 +1576,29 @@ def rebuild_repo(_: bool = Depends(require_admin_key)):
         if meta_r.returncode != 0 or not meta_r.stdout.strip():
             skipped_refs.append(ref)
             continue
-        commit_r = subprocess.run(
-            ["ostree", "--repo", repo, "commit",
-             f"--branch={ref}",
-             f"--tree=ref={ref}",
-             f"--add-metadata-string=xa.metadata={meta_r.stdout.strip()}",
-             "--keep-metadata",
-             "-s", f"fix: xa.metadata {ref}"],
-            capture_output=True, text=True, timeout=30
-        )
+        metadata_content = meta_r.stdout.strip()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkout_dir = os.path.join(tmpdir, "checkout")
+            co_r = subprocess.run(
+                ["ostree", "--repo", repo, "checkout", "--union", ref, checkout_dir],
+                capture_output=True, text=True, timeout=60
+            )
+            if co_r.returncode != 0:
+                failed_refs.append({"ref": ref, "error": co_r.stderr.strip()[:80]})
+                continue
+            with open(os.path.join(checkout_dir, "metadata"), "w") as mf:
+                mf.write(metadata_content + "\n")
+            commit_r = subprocess.run(
+                ["ostree", "--repo", repo, "commit",
+                 f"--branch={ref}",
+                 f"--tree=dir={checkout_dir}",
+                 f"--add-metadata-string=xa.metadata={metadata_content}",
+                 "--no-bindings",
+                 "--gpg-sign=E9ADCFFF97CE5264",
+                 "--gpg-homedir=/root/.gnupg",
+                 f"--subject=fix: xa.metadata {ref}"],
+                capture_output=True, text=True, timeout=60
+            )
         if commit_r.returncode == 0:
             fixed_refs.append(ref)
         else:
@@ -1640,16 +1655,30 @@ def fix_xa_metadata(_: bool = Depends(require_admin_key)):
 
         metadata_content = meta_r.stdout.strip()
 
-        # Re-commit same tree with xa.metadata set
-        commit_r = subprocess.run(
-            ["ostree", "--repo", repo, "commit",
-             f"--branch={ref}",
-             f"--tree=ref={ref}",
-             f"--add-metadata-string=xa.metadata={metadata_content}",
-             "--keep-metadata",
-             "-s", f"fix: add xa.metadata to {ref}"],
-            capture_output=True, text=True, timeout=30
-        )
+        # Re-commit using checkout approach (supports ostree 2022.2)
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as _tmpdir:
+            _co_dir = _os.path.join(_tmpdir, "co")
+            _co_r = subprocess.run(
+                ["ostree", "--repo", repo, "checkout", "--union", ref, _co_dir],
+                capture_output=True, text=True, timeout=60
+            )
+            if _co_r.returncode != 0:
+                failed.append({"ref": ref, "error": _co_r.stderr.strip()[:120]})
+                continue
+            with open(_os.path.join(_co_dir, "metadata"), "w") as _mf:
+                _mf.write(metadata_content + "\n")
+            commit_r = subprocess.run(
+                ["ostree", "--repo", repo, "commit",
+                 f"--branch={ref}",
+                 f"--tree=dir={_co_dir}",
+                 f"--add-metadata-string=xa.metadata={metadata_content}",
+                 "--no-bindings",
+                 "--gpg-sign=E9ADCFFF97CE5264",
+                 "--gpg-homedir=/root/.gnupg",
+                 f"--subject=fix: add xa.metadata to {ref}"],
+                capture_output=True, text=True, timeout=60
+            )
         if commit_r.returncode == 0:
             fixed.append(ref)
         else:
