@@ -92,6 +92,8 @@ for app_id, info in MANIFESTS.items():
             print(f"  ERR {app_id} checkout: {r.stderr.strip()[:120]}")
             continue
         # Write metadata file at root of checkout
+        # Normalize: xa.metadata and /metadata file must be byte-identical
+        metadata_content = metadata_content.rstrip("\n") + "\n"
         with open(os.path.join(checkout_dir, "metadata"), "w") as f:
             f.write(metadata_content)
         # Commit the directory back with xa.metadata
@@ -99,7 +101,7 @@ for app_id, info in MANIFESTS.items():
             "ostree", "--repo="+REPO, "commit",
             "--branch="+ref,
             f"--tree=dir={checkout_dir}",
-            f"--add-metadata-string=xa.metadata={metadata_content.strip()}",
+            f"--add-metadata-string=xa.metadata={metadata_content}",
             "--no-bindings",
             "--gpg-sign=E9ADCFFF97CE5264",
             "--gpg-homedir=/root/.gnupg",
