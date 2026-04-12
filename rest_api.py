@@ -2237,7 +2237,7 @@ def scan_manifest_endpoint(
     )
     # If submission_id given, store result on the App record
     if body.submission_id:
-        sub = db.query(Submission).filter(Submission.id == body.submission_id).first()
+        sub = db.query(AppSubmission).filter(AppSubmission.id == body.submission_id).first()
         if sub and sub.app_id:
             app_obj = db.query(App).filter(App.id == sub.app_id).first()
             if app_obj:
@@ -2257,17 +2257,10 @@ def scan_submission_endpoint(
 ):
     """Trigger a full scan for an existing submission (uses stored manifest)."""
     import datetime as _dt
-    sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    sub = db.query(AppSubmission).filter(AppSubmission.id == submission_id).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
-    # Get manifest from submission metadata if available
-    manifest_content = None
-    if sub.metadata_json:
-        try:
-            meta = sub.metadata_json if isinstance(sub.metadata_json, dict) else __import__("json").loads(sub.metadata_json)
-            manifest_content = meta.get("flatpak_manifest")
-        except Exception:
-            pass
+    manifest_content = None  # AppSubmission has no manifest storage; scan uses app_id
     result = _scan_flatpak(
         submission_id=submission_id,
         manifest_content=manifest_content,
@@ -2290,7 +2283,7 @@ def get_scan_result(
     db: Session = Depends(get_db),
 ):
     """Get the last scan result for a submission."""
-    sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    sub = db.query(AppSubmission).filter(AppSubmission.id == submission_id).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
     if sub.app_id:
@@ -2308,9 +2301,9 @@ def developer_submit_manifest(
     db: Session = Depends(get_db),
 ):
     """Developer uploads manifest for pre-submission scanning."""
-    sub = db.query(Submission).filter(
-        Submission.id == submission_id,
-        Submission.developer_user_id == user.id
+    sub = db.query(AppSubmission).filter(
+        AppSubmission.id == submission_id,
+        AppSubmission.user_id == user.id
     ).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
