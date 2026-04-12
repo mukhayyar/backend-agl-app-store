@@ -53,17 +53,31 @@ class ScanQueueWorker:
             except Exception as e:
                 log.error(f"Scan worker error: {e}", exc_info=True)
 
+    def _set_scan_status(self, submission_id: int, status: str):
+        """Update scan_status in DB without touching scan_result."""
+        db = next(self._get_db())
+        try:
+            sub = db.query(self._Sub).filter(self._Sub.id == submission_id).first()
+            if sub:
+                sub.scan_status = status
+                db.commit()
+        except Exception as e:
+            log.warning(f"Failed to set scan_status={status} for #{submission_id}: {e}")
+        finally:
+            db.close()
+
     def _process(self, job: ScanJob):
         log.info(f"Processing scan #{job.submission_id}")
+        self._set_scan_status(job.submission_id, "running")
         try:
-            # Import here to avoid circular issues at module load
-            from flatpak_scanner import scan_submission as run_scan, asdict
+            # Use OSTree-aware scanner for real flatpak analysis
+            from flatpak_scanner import scan_ostree_ref as run_scan, asdict
             from telegram_notifier import alert_scan_result, alert_scan_blocked
 
             result = run_scan(
                 submission_id=job.submission_id,
-                manifest_content=job.manifest_content,
-                bundle_path=job.bundle_path,
+                app_id=job.app_name,
+                main_repo="/srv/flatpak-repo",
             )
             result_dict = asdict(result)
 
@@ -71,16 +85,21 @@ class ScanQueueWorker:
             db = next(self._get_db())
             try:
                 sub = db.query(self._Sub).filter(self._Sub.id == job.submission_id).first()
-                if sub and sub.app_id:
-                    app_obj = db.query(self._App).filter(self._App.id == sub.app_id).first()
-                    if app_obj:
-                        app_obj.scan_result  = result_dict
-                        app_obj.scan_verdict = result.verdict
-                        app_obj.scan_at      = datetime.datetime.utcnow()
-                        # Auto-reject BLOCK verdict — move to needs_review flag
-                        if result.verdict == "BLOCK":
-                            app_obj.scan_blocked = True
-                        db.commit()
+                if sub:
+                    sub.scan_result  = result_dict
+                    sub.scan_verdict = result.verdict
+                    sub.scan_at      = datetime.datetime.utcnow()
+                    sub.scan_status  = "done"
+                    # Also update App record if linked
+                    if sub.app_id:
+                        app_obj = db.query(self._App).filter(self._App.id == sub.app_id).first()
+                        if app_obj:
+                            app_obj.scan_result  = result_dict
+                            app_obj.scan_verdict = result.verdict
+                            app_obj.scan_at      = datetime.datetime.utcnow()
+                            if result.verdict == "BLOCK":
+                                app_obj.scan_blocked = True
+                    db.commit()
             finally:
                 db.close()
 
@@ -95,6 +114,7 @@ class ScanQueueWorker:
 
         except Exception as e:
             log.error(f"Scan failed for #{job.submission_id}: {e}", exc_info=True)
+            self._set_scan_status(job.submission_id, "failed")
 
 
 # Singleton — initialized in rest_api.py startup
