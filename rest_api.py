@@ -1475,6 +1475,33 @@ def list_users(admin: User = Depends(_require_jwt_admin), db: Session = Depends(
     users = db.query(User).limit(100).all()
     return [{"id": u.id, "display_name": u.display_name, "role": getattr(u, "role", "user"), "accepted_publisher_agreement": bool(u.accepted_publisher_agreement_at), "is_trusted_publisher": bool(u.is_trusted_publisher), "trusted_at": str(u.trusted_at) if u.trusted_at else None, "app_count": db.query(App).filter(App.owner_user_id == u.id).count(), "email": getattr(u, "email", None), "email_verified": bool(getattr(u, "email_verified", False)), "is_organization_email": bool(getattr(u, "is_organization_email", False)), "organization_domain": getattr(u, "organization_domain", None), "auth_provider": getattr(u, "auth_provider", "github"), "trust_request_status": getattr(u, "trust_request_status", None), "trust_request_reason": getattr(u, "trust_request_reason", None), "trust_request_github": getattr(u, "trust_request_github", None), "trust_request_portfolio": getattr(u, "trust_request_portfolio", None), "trust_request_at": str(u.trust_request_at) if getattr(u, "trust_request_at", None) else None} for u in users]
 
+@app.get("/admin/users/{user_id}/profile")
+def get_admin_user_profile(user_id: int, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    submissions = db.query(AppSubmission).filter(AppSubmission.user_id == user_id).order_by(AppSubmission.submitted_at.desc()).all()
+    apps = db.query(App).filter(App.owner_user_id == user_id).all()
+    return {
+        "id": user.id,
+        "display_name": user.display_name,
+        "email": _get_user_email(db, user_id) or getattr(user, "email", None),
+        "role": getattr(user, "role", "user"),
+        "is_trusted_publisher": bool(user.is_trusted_publisher),
+        "accepted_publisher_agreement": bool(user.accepted_publisher_agreement_at),
+        "auth_provider": getattr(user, "auth_provider", "github"),
+        "email_verified": bool(getattr(user, "email_verified", False)),
+        "submissions": [
+            {"id": s.id, "app_id": s.app_id, "name": s.name, "status": s.status,
+             "submitted_at": str(s.submitted_at), "scan_verdict": s.scan_verdict}
+            for s in submissions
+        ],
+        "published_apps": [
+            {"id": a.id, "name": a.name, "summary": a.summary, "icon": a.icon}
+            for a in apps
+        ],
+    }
+
 @app.put("/admin/users/{user_id}/role")
 def set_user_role(user_id: int, role: str = Query(...), admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
     if role not in ("user", "publisher", "reviewer", "admin"):
