@@ -1576,7 +1576,8 @@ def rebuild_repo(_: bool = Depends(require_admin_key)):
         if meta_r.returncode != 0 or not meta_r.stdout.strip():
             skipped_refs.append(ref)
             continue
-        metadata_content = meta_r.stdout.strip()
+        # Normalize: exactly one trailing newline — must be byte-identical to /metadata file
+        metadata_content = meta_r.stdout.rstrip("\n") + "\n"
         with tempfile.TemporaryDirectory() as tmpdir:
             checkout_dir = os.path.join(tmpdir, "checkout")
             co_r = subprocess.run(
@@ -1587,7 +1588,7 @@ def rebuild_repo(_: bool = Depends(require_admin_key)):
                 failed_refs.append({"ref": ref, "error": co_r.stderr.strip()[:80]})
                 continue
             with open(os.path.join(checkout_dir, "metadata"), "w") as mf:
-                mf.write(metadata_content + "\n")
+                mf.write(metadata_content)
             commit_r = subprocess.run(
                 ["ostree", "--repo", repo, "commit",
                  f"--branch={ref}",
@@ -1653,7 +1654,8 @@ def fix_xa_metadata(_: bool = Depends(require_admin_key)):
             skipped.append({"ref": ref, "reason": "no /metadata file"})
             continue
 
-        metadata_content = meta_r.stdout.strip()
+        # Normalize to exactly one trailing newline — must match byte-for-byte
+        metadata_content = meta_r.stdout.rstrip("\n") + "\n"
 
         # Re-commit using checkout approach (supports ostree 2022.2)
         import tempfile, os as _os
@@ -1667,7 +1669,7 @@ def fix_xa_metadata(_: bool = Depends(require_admin_key)):
                 failed.append({"ref": ref, "error": _co_r.stderr.strip()[:120]})
                 continue
             with open(_os.path.join(_co_dir, "metadata"), "w") as _mf:
-                _mf.write(metadata_content + "\n")
+                _mf.write(metadata_content)
             commit_r = subprocess.run(
                 ["ostree", "--repo", repo, "commit",
                  f"--branch={ref}",
