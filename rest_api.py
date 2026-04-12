@@ -69,6 +69,7 @@ def _run_migrations():
             ("scan_result", "JSONB"),
             ("scan_at", "TIMESTAMP"),
             ("scan_verdict", "VARCHAR(20)"),
+            ("scan_status", "VARCHAR(20)"),
         ]:
             try:
                 conn.execute(text(f"ALTER TABLE app_submissions ADD COLUMN IF NOT EXISTS {col} {typ}"))
@@ -2266,39 +2267,43 @@ def scan_submission_endpoint(
     admin: User = Depends(_require_jwt_admin),
     db: Session = Depends(get_db),
 ):
-    """Trigger a full scan for an existing submission — checks out OSTree ref and runs ClamAV/Trivy/checksec."""
-    import datetime as _dt
+    """Enqueue an async scan — returns immediately, worker runs in background."""
     sub = db.query(AppSubmission).filter(AppSubmission.id == submission_id).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    # Import the new OSTree-aware scanner
-    from flatpak_scanner import scan_ostree_ref as _scan_ostree
-
-    result = _scan_ostree(
-        submission_id=submission_id,
-        app_id=sub.app_id,
-        main_repo="/srv/flatpak-repo",
-    )
-
-    result_dict = _asdict(result)
-
-    # Store on submission
-    sub.scan_result = result_dict
-    sub.scan_verdict = result.verdict
-    sub.scan_at = _dt.datetime.utcnow()
+    # Mark as queued immediately so frontend can poll
+    sub.scan_status = "queued"
+    sub.scan_result = None
+    sub.scan_verdict = None
+    sub.scan_at = None
     db.commit()
 
-    # Also store on App record if it exists
-    if sub.app_id:
-        app_obj = db.query(App).filter(App.id == sub.app_id).first()
-        if app_obj:
-            app_obj.scan_result = result_dict
-            app_obj.scan_verdict = result.verdict
-            app_obj.scan_at = _dt.datetime.utcnow()
-            db.commit()
+    _enqueue_scan(ScanJob(
+        submission_id=submission_id,
+        app_name=sub.app_id or f"submission-{submission_id}",
+        developer_name="",
+    ))
+    return {"status": "queued", "submission_id": submission_id}
 
-    return result_dict
+
+@app.get("/admin/scan/submission/{submission_id}/status")
+def get_scan_status(
+    submission_id: int,
+    admin: User = Depends(_require_jwt_admin),
+    db: Session = Depends(get_db),
+):
+    """Poll the background scan status for a submission."""
+    sub = db.query(AppSubmission).filter(AppSubmission.id == submission_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    status = getattr(sub, "scan_status", None) or ("done" if sub.scan_result else "idle")
+    return {
+        "status": status,
+        "submission_id": submission_id,
+        "verdict": sub.scan_verdict,
+        "scan_at": sub.scan_at.isoformat() if sub.scan_at else None,
+    }
 
 
 @app.get("/admin/scan/submission/{submission_id}/result")
