@@ -961,9 +961,22 @@ def submit_app(
     db: Session = Depends(get_db),
 ):
     """Submit an app for listing on PensHub store."""
+    import re as _re
     parts = body.app_id.split(".")
     if len(parts) < 3:
-        raise HTTPException(status_code=422, detail="app_id must be reverse-domain (e.g. com.example.MyApp)")
+        raise HTTPException(status_code=422, detail="app_id must be reverse-domain with at least 3 segments (e.g. com.example.MyApp)")
+    _seg_re = _re.compile(r'^[A-Za-z_][A-Za-z0-9_-]*$')
+    for seg in parts:
+        if not seg:
+            raise HTTPException(status_code=422, detail="app_id segments must not be empty")
+        if not _seg_re.match(seg):
+            if seg[0].isdigit():
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"app_id segment '{seg}' starts with a digit — flatpak requires each segment to start with a letter or underscore. "
+                           f"Example: rename 'com.example.2048' to 'com.example.Game2048'."
+                )
+            raise HTTPException(status_code=422, detail=f"app_id segment '{seg}' contains invalid characters (only letters, digits, _ and - allowed)")
     existing = db.query(AppSubmission).filter(
         AppSubmission.app_id == body.app_id,
         AppSubmission.status.in_(["pending", "approved"]),
