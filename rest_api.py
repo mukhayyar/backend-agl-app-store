@@ -1041,7 +1041,7 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
     try:
         import subprocess as _sp
         _sp.run(["python3", POPULATE_APPSTREAM_SCRIPT], capture_output=True, cwd=APP_ROOT_DIR, timeout=30)
-        _sp.run(["flatpak", "build-update-repo", "--generate-static-deltas", "/srv/flatpak-repo"], capture_output=True, timeout=60)
+        _sp.run(["flatpak", "build-update-repo", "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--generate-static-deltas", "/srv/flatpak-repo"], capture_output=True, timeout=60)
     except Exception:
         pass
 
@@ -1539,7 +1539,7 @@ def rebuild_repo(_: bool = Depends(require_admin_key)):
     import subprocess
     results = {}
     r1 = subprocess.run(
-        ["flatpak", "build-update-repo", "--generate-static-deltas", "/srv/flatpak-repo"],
+        ["flatpak", "build-update-repo", "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--generate-static-deltas", "/srv/flatpak-repo"],
         capture_output=True, timeout=120
     )
     results["flatpak_build_update_repo"] = "ok" if r1.returncode == 0 else r1.stderr.decode()[:200]
@@ -1593,7 +1593,7 @@ def check_expiry(_: bool = Depends(require_admin_key), db: Session = Depends(get
                 capture_output=True
             )
         subprocess.run(
-            ["flatpak", "build-update-repo", "--generate-static-deltas", repo],
+            ["flatpak", "build-update-repo", "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--generate-static-deltas", repo],
             capture_output=True
         )
         subprocess.run(
