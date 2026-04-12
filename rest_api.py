@@ -76,6 +76,16 @@ def _run_migrations():
                 conn.commit()
             except Exception:
                 conn.rollback()
+        # revocation columns on apps
+        for col, typ in [
+            ("revoked_at", "TIMESTAMP"),
+            ("revocation_reason", "TEXT"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE app_submissions ADD COLUMN IF NOT EXISTS {col} {typ}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 _run_migrations()
 
@@ -428,6 +438,18 @@ def _email_app_expired(to: str, app_name: str, app_id: str):
         f"<a href='{renew_url}' style='display:inline-block;background:#4f46e5;color:#fff;"
         f"padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0'>"
         f"Renew Now</a></div>")
+
+def _email_app_revoked(to: str, app_name: str, app_id: str, reason: str):
+    _send_email(to, f"URGENT: {app_name} Revoked from Distribution",
+        f"<div style='font-family:system-ui,sans-serif;max-width:600px;margin:0 auto;padding:32px'>"
+        f"<h2 style='color:#dc2626'>{app_name} Has Been Revoked</h2>"
+        f"<p>Your app <strong>{app_name}</strong> (<code>{app_id}</code>) has been <strong>permanently removed</strong> "
+        f"from the PensHub distribution by an administrator.</p>"
+        f"<p><strong>Reason:</strong> {reason}</p>"
+        f"<p>The app has been removed from the repository and can no longer be installed by users. "
+        f"Existing installations may continue to function but will not receive updates.</p>"
+        f"<p>If you believe this is a mistake, contact "
+        f"<a href='mailto:admin@agl-store.cyou'>admin@agl-store.cyou</a>.</p></div>")
 
 def _email_app_renewed(to: str, app_name: str, app_id: str, new_expiry: str):
     _send_email(to, f"App Renewed: {app_name}",
@@ -1612,6 +1634,67 @@ def admin_unpublish_app(app_id: str, body: UnpublishRequest,
         if email:
             _email_app_unpublished_admin(email, app_rec.name or app_id, app_id, body.reason)
     return {"message": f"App {app_id} unpublished"}
+
+@app.post("/admin/apps/{app_id}/revoke")
+def admin_revoke_app(app_id: str, body: UnpublishRequest,
+    admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+    """
+    Permanently revoke an app from distribution:
+    1. Removes the OSTree ref from the flatpak repo
+    2. Rebuilds the repo summary (devices can no longer install/update)
+    3. Marks app as unpublished + revoked in DB
+    4. Marks related submission as 'revoked'
+    5. Emails the developer
+    """
+    import subprocess as _sp
+    app_rec = db.query(App).filter(App.id == app_id).first()
+    if not app_rec:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    REPO = "/srv/flatpak-repo"
+    ref  = f"app/{app_id}/x86_64/master"
+
+    # 1. Remove OSTree ref
+    r = _sp.run(
+        ["ostree", f"--repo={REPO}", "refs", "--delete", ref],
+        capture_output=True, text=True
+    )
+    ostree_removed = r.returncode == 0
+
+    # 2. Rebuild repo summary so the deletion propagates to devices
+    if ostree_removed:
+        _sp.run(
+            ["flatpak", "build-update-repo", "--generate-static-deltas", REPO],
+            capture_output=True
+        )
+
+    # 3. Mark app in DB
+    now = datetime.datetime.utcnow()
+    app_rec.published         = False
+    app_rec.scan_blocked      = True
+    app_rec.updated_at        = now
+    app_rec.revoked_at        = now
+    app_rec.revocation_reason = body.reason
+    db.commit()
+
+    # 4. Mark related submissions as revoked
+    db.query(AppSubmission).filter(
+        AppSubmission.app_id == app_id,
+        AppSubmission.status == "approved"
+    ).update({"status": "revoked"})
+    db.commit()
+
+    # 5. Email developer
+    if app_rec.owner_user_id:
+        email = _get_user_email(db, app_rec.owner_user_id)
+        if email:
+            _email_app_revoked(email, app_rec.name or app_id, app_id, body.reason)
+
+    return {
+        "message": f"App {app_id} revoked",
+        "ostree_ref_removed": ostree_removed,
+        "repo_rebuilt": ostree_removed,
+    }
 
 @app.post("/admin/apps/{app_id}/publish")
 def admin_publish_app(app_id: str, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
