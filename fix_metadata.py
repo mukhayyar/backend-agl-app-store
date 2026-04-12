@@ -101,6 +101,8 @@ for app_id, info in MANIFESTS.items():
             f"--tree=dir={checkout_dir}",
             f"--add-metadata-string=xa.metadata={metadata_content.strip()}",
             "--no-bindings",
+            "--gpg-sign=E9ADCFFF97CE5264",
+            "--gpg-homedir=/root/.gnupg",
             f"--subject=Inject metadata for {app_id}"
         ], capture_output=True, text=True)
         if r.returncode == 0:
