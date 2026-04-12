@@ -335,13 +335,46 @@ def _create_jwt(user_id: int, role: str) -> str:
     }
     return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def _decode_jwt(token: str) -> dict:
+def _create_upload_token(user_id: int, app_id: str, sub_id: int) -> str:
+    """48-hour scoped token allowing bundle upload for a specific submission."""
+    payload = {
+        "sub": "upload",
+        "user_id": user_id,
+        "app_id": app_id,
+        "sub_id": sub_id,
+        "exp": datetime.utcnow() + timedelta(hours=48),
+    }
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _verify_upload_or_dev_token(raw_token: str, db) -> "User":
+    """Accept either a scoped upload token or a regular developer JWT/API key."""
+    # Try scoped upload token
     try:
-        return pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    except pyjwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except pyjwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        claims = pyjwt.decode(raw_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if claims.get("sub") == "upload":
+            user = db.query(User).filter(User.id == claims["user_id"]).first()
+            if user:
+                return user
+    except Exception:
+        pass
+    # Fall back to regular dev auth (JWT session token or API key)
+    from models import DevKey as _DevKey
+    # API key
+    key_row = db.query(_DevKey).filter(_DevKey.token == raw_token).first()
+    if key_row:
+        user = db.query(User).filter(User.id == key_row.user_id).first()
+        if user and user.role in ("developer", "admin"):
+            return user
+    # JWT session
+    try:
+        payload = _decode_jwt(raw_token)
+        user = db.query(User).filter(User.id == payload.get("user_id")).first()
+        if user and user.role in ("developer", "admin"):
+            return user
+    except Exception:
+        pass
+    raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 # Known free/personal email providers (non-exhaustive but covers >99% of cases)
@@ -1152,16 +1185,19 @@ def serve_push_script():
 @app.post("/developer/upload-bundle", status_code=200)
 async def upload_bundle(
     file: UploadFile,
-    user: User = Depends(_get_dev_user),
+    authorization: str = Header(None),
     db: Session = Depends(get_db),
 ):
     """
-    Accept a .flatpak bundle from a developer, import it into a per-developer
-    staging area in the main OSTree repo, and return the detected app_id and ref.
-
-    The developer then calls /developer/submit with the returned app_id to
-    register metadata and enter the admin review queue.
+    Accept a .flatpak bundle from a developer. Accepts either:
+    - A scoped upload token returned by /developer/submit (recommended), or
+    - A regular developer API key / session token.
+    Imports the bundle into the OSTree repo via flatpak build-import-bundle.
     """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization: Bearer <token> required")
+    raw_token = authorization.split(" ", 1)[1]
+    user = _verify_upload_or_dev_token(raw_token, db)
     import tempfile, subprocess, re as _re
 
     if not file.filename or not file.filename.endswith(".flatpak"):
@@ -1298,7 +1334,15 @@ def submit_app(
             developer_name=user.display_name or f"User#{user.id}"))
         alert_new_submission(sub.id, body.name or body.app_id, user.display_name or f"User#{user.id}")
     except Exception: pass
-    return {"id": sub.id, "app_id": sub.app_id, "name": sub.name, "status": sub.status, "submitted_at": str(sub.submitted_at)}
+    upload_token = _create_upload_token(user.id, sub.app_id, sub.id)
+    return {
+        "id": sub.id,
+        "app_id": sub.app_id,
+        "name": sub.name,
+        "status": sub.status,
+        "submitted_at": str(sub.submitted_at),
+        "upload_token": upload_token,
+    }
 
 @app.get("/developer/submissions")
 def list_my_submissions(user: User = Depends(_get_dev_user), db: Session = Depends(get_db)):
