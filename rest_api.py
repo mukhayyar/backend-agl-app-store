@@ -75,7 +75,6 @@ def require_admin_key(x_api_key: str = Header(None)):
 def _create_jwt(user_id: int, role: str) -> str:
     payload = {
         "sub": str(user_id),
-        "user_id": user_id,
         "role": role,
         "exp": datetime.datetime.utcnow() + datetime.timedelta(days=JWT_EXPIRE_DAYS),
     }
@@ -136,14 +135,14 @@ def _get_current_user(authorization: str = Header(None), db: Session = Depends(g
         payload = _decode_jwt(token)
     except HTTPException:
         return None
-    return db.query(User).filter(User.id == payload["user_id"]).first()
+    return db.query(User).filter(User.id == int(payload["sub"])).first()
 
 def _require_jwt_user(authorization: str = Header(None), db: Session = Depends(get_db)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authorization header required")
     token = authorization.split(" ", 1)[1]
     payload = _decode_jwt(token)
-    user = db.query(User).filter(User.id == payload["user_id"]).first()
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
@@ -175,7 +174,7 @@ def _get_dev_user(
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
         payload = _decode_jwt(token)
-        user = db.query(User).filter(User.id == payload["user_id"]).first()
+        user = db.query(User).filter(User.id == int(payload["sub"])).first()
         if user:
             return user
     raise HTTPException(status_code=401, detail="Authentication required (Bearer or X-Developer-Key)")
