@@ -27,3 +27,5 @@ __pycache__/
 # Pre-built binaries (arch-specific, copied by setup.sh)
 docker/flat-manager/flat-manager-client
 docker/flat-manager/gentoken
+.env.bak
+*.env.bak
