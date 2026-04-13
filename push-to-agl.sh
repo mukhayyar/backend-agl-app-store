@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # push-to-agl.sh — AGL PENS Store developer push script
 # Usage:
-#   ./push-to-agl.sh --token YOUR_API_KEY --app-id com.example.MyApp [options]
+#   ./push-to-agl.sh --token YOUR_TOKEN --app-id com.example.MyApp [options]
 #
 # Prerequisites:
 #   - flatpak-builder installed and app built into a local repo
-#   - API key from https://admin.agl-store.cyou/developer/portal
+#   - Your AGL signing key imported: gpg --import agl-signing-key-*.gpg
+#   - API key or upload token from https://admin.agl-store.cyou/developer/portal
 #
 # Example full flow:
 #   flatpak-builder --force-clean --repo=repo build-dir com.example.MyApp.yml
 #   ./push-to-agl.sh \
-#       --token sk-xxxx \
+#       --token YOUR_UPLOAD_TOKEN \
 #       --app-id com.example.MyApp \
 #       --name "My App" \
 #       --summary "A short description" \
@@ -32,14 +33,15 @@ HOMEPAGE=""
 REPO_DIR="./repo"
 BUNDLE_FILE=""
 KEEP_BUNDLE=false
+GPG_KEY=""  # fingerprint of the AGL signing key (auto-detected if omitted)
 
-# ── Parse arguments ────────────────────────────────────────────────────────────
+# ── Parse arguments ─────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
 Required:
-  --token TOKEN         API key from the developer portal
+  --token TOKEN         Upload token or API key from the developer portal
   --app-id ID           Flatpak app ID (e.g. com.example.MyApp)
   --name NAME           Display name of the app
   --summary TEXT        One-line description (shown in store listing)
@@ -52,12 +54,19 @@ Optional:
   --homepage URL        Project homepage URL
   --repo DIR            Path to local flatpak repo (default: ./repo)
   --bundle FILE         Use existing .flatpak bundle instead of building from repo
+  --gpg-key FINGERPRINT GPG key fingerprint to sign with (auto-detected if omitted)
   --keep-bundle         Do not delete the .flatpak bundle after upload
+
+First-time setup:
+  1. Log in to https://admin.agl-store.cyou/developer/portal
+  2. Download your signing key (Signing Key section → Download)
+  3. Import it: gpg --import agl-signing-key-*.gpg
+  4. Run this script — it will sign your bundle automatically
 
 Example:
   flatpak-builder --force-clean --repo=repo build-dir com.example.MyApp.yml
   $(basename "$0") \\
-    --token sk-xxxx \\
+    --token YOUR_UPLOAD_TOKEN \\
     --app-id com.example.MyApp \\
     --name "My App" \\
     --summary "Does something useful" \\
@@ -80,13 +89,14 @@ while [[ $# -gt 0 ]]; do
     --homepage)    HOMEPAGE="$2"; shift 2 ;;
     --repo)        REPO_DIR="$2"; shift 2 ;;
     --bundle)      BUNDLE_FILE="$2"; shift 2 ;;
+    --gpg-key)     GPG_KEY="$2"; shift 2 ;;
     --keep-bundle) KEEP_BUNDLE=true; shift ;;
     -h|--help)     usage ;;
     *) echo "Unknown option: $1"; usage ;;
   esac
 done
 
-# ── Validate required args ─────────────────────────────────────────────────────
+# ── Validate required args ────────────────────────────────────────────────────
 [[ -z "$TOKEN" ]]   && { echo "Error: --token is required"; usage; }
 [[ -z "$APP_ID" ]]  && { echo "Error: --app-id is required"; usage; }
 [[ -z "$NAME" ]]    && { echo "Error: --name is required"; usage; }
@@ -101,15 +111,49 @@ fi
 for seg in "${SEGS[@]}"; do
   if [[ "$seg" =~ ^[0-9] ]]; then
     echo "Error: app_id segment '$seg' starts with a digit."
-    echo "  Flatpak will reject this ID at install time."
-    echo "  Rename it, e.g. '2048' → 'Game2048'"
+    echo "  Flatpak rejects such IDs. Rename it, e.g. '2048' → 'Game2048'"
     exit 1
   fi
 done
 
 [[ -z "$DESCRIPTION" ]] && DESCRIPTION="$SUMMARY"
 
-# ── Step 1: Build bundle ───────────────────────────────────────────────────────
+# ── Prerequisite: gpg must be available ──────────────────────────────────────
+if ! command -v gpg &>/dev/null; then
+  echo "Error: gpg not found. Install GnuPG (e.g. sudo apt install gnupg)"
+  exit 1
+fi
+
+# ── Auto-detect AGL signing key if not specified ─────────────────────────────
+if [[ -z "$GPG_KEY" ]]; then
+  GPG_KEY=$(gpg --list-secret-keys --with-colons 2>/dev/null \
+    | awk -F: '/^uid:/ && /AGL Developer/' \
+    | head -1 | cut -d: -f10 || true)
+  if [[ -z "$GPG_KEY" ]]; then
+    # fallback: try fingerprint from uid field
+    GPG_KEY=$(gpg --list-secret-keys --with-colons 2>/dev/null \
+      | awk -F: 'prev=="fpr" && /AGL Developer/{print $10} {prev=$1}' \
+      | head -1 || true)
+    # Simpler fallback
+    GPG_KEY=$(gpg --list-secret-keys --with-colons 2>/dev/null \
+      | grep -A1 'AGL Developer' | grep '^fpr' | head -1 | cut -d: -f10 || true)
+  fi
+  if [[ -z "$GPG_KEY" ]]; then
+    echo ""
+    echo "Error: AGL signing key not found in your GPG keyring."
+    echo ""
+    echo "  1. Log in to https://admin.agl-store.cyou/developer/portal"
+    echo "  2. Go to the 'Signing Key' section and click 'Download Signing Key'"
+    echo "  3. Import it:  gpg --import agl-signing-key-*.gpg"
+    echo "  4. Verify:     gpg --list-secret-keys | grep 'AGL Developer'"
+    echo ""
+    echo "  Or specify the key explicitly: --gpg-key YOUR_FINGERPRINT"
+    exit 1
+  fi
+  echo "==> Using AGL signing key: ${GPG_KEY: -16}"
+fi
+
+# ── Step 1: Build bundle ──────────────────────────────────────────────────────
 CLEANUP_BUNDLE=false
 if [[ -z "$BUNDLE_FILE" ]]; then
   if [[ ! -d "$REPO_DIR" ]]; then
@@ -117,7 +161,6 @@ if [[ -z "$BUNDLE_FILE" ]]; then
     echo "  Build it first: flatpak-builder --force-clean --repo=repo build-dir YOUR_MANIFEST.yml"
     exit 1
   fi
-
   BUNDLE_FILE="${APP_ID}.flatpak"
   echo "==> Building bundle from $REPO_DIR..."
   flatpak build-bundle "$REPO_DIR" "$BUNDLE_FILE" "$APP_ID"
@@ -125,53 +168,56 @@ if [[ -z "$BUNDLE_FILE" ]]; then
   $KEEP_BUNDLE || CLEANUP_BUNDLE=true
 fi
 
+SIG_FILE="${BUNDLE_FILE}.asc"
+
 cleanup() {
-  if $CLEANUP_BUNDLE && [[ -f "$BUNDLE_FILE" ]]; then
-    rm -f "$BUNDLE_FILE"
-  fi
+  $CLEANUP_BUNDLE && [[ -f "$BUNDLE_FILE" ]] && rm -f "$BUNDLE_FILE"
+  [[ -f "$SIG_FILE" ]] && rm -f "$SIG_FILE"
 }
 trap cleanup EXIT
 
-# ── Step 2: Upload bundle ──────────────────────────────────────────────────────
+# ── Step 2: Sign bundle ───────────────────────────────────────────────────────
+echo "==> Signing bundle with key ${GPG_KEY: -16}..."
+rm -f "$SIG_FILE"
+gpg --armor --detach-sign \
+    --default-key "$GPG_KEY" \
+    --output "$SIG_FILE" \
+    "$BUNDLE_FILE"
+echo "    Signature: $SIG_FILE"
+
+# ── Step 3: Upload signed bundle ──────────────────────────────────────────────
 echo "==> Uploading bundle to AGL store..."
 UPLOAD_RESP=$(curl -sf \
   -H "Authorization: Bearer $TOKEN" \
   -F "file=@${BUNDLE_FILE};type=application/octet-stream" \
+  -F "signature=$(cat "$SIG_FILE")" \
   "${API_BASE}/developer/upload-bundle") || {
-    echo "Error: Upload failed. Check your API key and network connection."
+    echo "Error: Upload failed."
+    echo "  Check your token, signing key, and network connection."
+    echo "  Bundle file:  $BUNDLE_FILE"
+    echo "  Signature:    $SIG_FILE"
     exit 1
 }
 
 DETECTED_ID=$(echo "$UPLOAD_RESP" | grep -o '"app_id":"[^"]*"' | cut -d'"' -f4 || true)
 echo "    Upload successful. Detected app_id: ${DETECTED_ID:-$APP_ID}"
 
-# ── Step 3: Submit metadata ────────────────────────────────────────────────────
+# ── Step 4: Submit metadata ───────────────────────────────────────────────────
 echo "==> Submitting app metadata..."
 
-# Build JSON
-JSON=$(cat <<ENDJSON
-{
-  "app_id": "$APP_ID",
-  "name": "$NAME",
-  "summary": "$SUMMARY",
-  "description": "$DESCRIPTION",
-  "app_type": "desktop-application",
-  "categories": ["$CATEGORY"]
-  $([ -n "$LICENSE" ]  && echo ", \"license\": \"$LICENSE\"")
-  $([ -n "$ICON" ]     && echo ", \"icon\": \"$ICON\"")
-  $([ -n "$HOMEPAGE" ] && echo ", \"homepage\": \"$HOMEPAGE\"")
-}
-ENDJSON
-)
+JSON_PARTS="{\"app_id\": \"$APP_ID\", \"name\": \"$NAME\", \"summary\": \"$SUMMARY\", \"description\": \"$DESCRIPTION\", \"app_type\": \"desktop-application\", \"categories\": [\"$CATEGORY\"]"
+[[ -n "$LICENSE" ]]  && JSON_PARTS="$JSON_PARTS, \"license\": \"$LICENSE\""
+[[ -n "$ICON" ]]     && JSON_PARTS="$JSON_PARTS, \"icon\": \"$ICON\""
+[[ -n "$HOMEPAGE" ]] && JSON_PARTS="$JSON_PARTS, \"homepage\": \"$HOMEPAGE\""
+JSON_PARTS="$JSON_PARTS}"
 
 SUBMIT_RESP=$(curl -sf \
   -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "$JSON" \
+  -d "$JSON_PARTS" \
   "${API_BASE}/developer/submit") || {
-    echo "Error: Submission failed."
-    echo "Response: $SUBMIT_RESP"
+    echo "Error: Metadata submission failed."
     exit 1
 }
 
@@ -179,9 +225,9 @@ SUB_ID=$(echo "$SUBMIT_RESP" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || 
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 echo ""
-echo "✓ Done! Submission #${SUB_ID:-?} is now in the admin review queue."
+echo "✓ Done! Submission #${SUB_ID:-?} queued for review."
 echo ""
-echo "  Track status: https://admin.agl-store.cyou/developer/portal"
-echo "  App ID:       $APP_ID"
-echo "  Next steps:   An admin will review, scan, and approve your app."
-echo "                You'll receive an email when it goes live."
+echo "  App ID:    $APP_ID"
+echo "  Track:     https://admin.agl-store.cyou/developer/portal"
+echo "  An admin will review and scan your app."
+echo "  You'll receive an email when it goes live."
