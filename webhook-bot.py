@@ -30,15 +30,20 @@ REPO_MAP = {
         'service': 'agl-frontend',
     },
     'backend-agl-app-store': {
-        'dir': '/root/agl/apps/backend',
+        'dir': '/root/agl',
         'build': None,
-        'service': 'agl-backend',
-        'extra_services': ['agl-rest'],
+        'service': 'agl-rest',
+        'extra_services': ['agl-backend'],
     },
     'admin-frontend-agl': {
         'dir': '/root/agl/apps/admin-frontend',
         'build': 'npm install && npm run build',
         'service': 'agl-admin',
+    },
+    'simple-flatpak-app-collections': {
+        'dir': '/root/agl/simple-flatpak-app-collections',
+        'build': None,
+        'service': None,
     },
 }
 
@@ -85,6 +90,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         pass  # suppress default access log
 
     def do_POST(self):
+        if self.path not in ('/', '/github-webhook', '/github-webhook/'):
+            self.send_response(404)
+            self.end_headers()
+            return
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length)
 
