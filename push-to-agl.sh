@@ -34,6 +34,7 @@ REPO_DIR="./repo"
 BUNDLE_FILE=""
 KEEP_BUNDLE=false
 GPG_KEY=""  # fingerprint of the AGL signing key (auto-detected if omitted)
+ARCH=""     # target architecture (default: native; set to aarch64 for Pi 4)
 
 # ── Parse arguments ─────────────────────────────────────────────────────────
 usage() {
@@ -55,6 +56,7 @@ Optional:
   --repo DIR            Path to local flatpak repo (default: ./repo)
   --bundle FILE         Use existing .flatpak bundle instead of building from repo
   --gpg-key FINGERPRINT GPG key fingerprint to sign with (auto-detected if omitted)
+  --arch ARCH           Target architecture: x86_64 (default) or aarch64
   --keep-bundle         Do not delete the .flatpak bundle after upload
 
 First-time setup:
@@ -89,6 +91,7 @@ while [[ $# -gt 0 ]]; do
     --homepage)    HOMEPAGE="$2"; shift 2 ;;
     --repo)        REPO_DIR="$2"; shift 2 ;;
     --bundle)      BUNDLE_FILE="$2"; shift 2 ;;
+    --arch)        ARCH="$2"; shift 2 ;;
     --gpg-key)     GPG_KEY="$2"; shift 2 ;;
     --keep-bundle) KEEP_BUNDLE=true; shift ;;
     -h|--help)     usage ;;
@@ -163,7 +166,9 @@ if [[ -z "$BUNDLE_FILE" ]]; then
   fi
   BUNDLE_FILE="${APP_ID}.flatpak"
   echo "==> Building bundle from $REPO_DIR..."
-  flatpak build-bundle "$REPO_DIR" "$BUNDLE_FILE" "$APP_ID"
+  ARCH_ARGS=()
+  [[ -n "$ARCH" ]] && ARCH_ARGS=(--arch "$ARCH")
+  flatpak build-bundle "${ARCH_ARGS[@]}" "$REPO_DIR" "$BUNDLE_FILE" "$APP_ID"
   echo "    Bundle: $BUNDLE_FILE ($(du -sh "$BUNDLE_FILE" | cut -f1))"
   $KEEP_BUNDLE || CLEANUP_BUNDLE=true
 fi
