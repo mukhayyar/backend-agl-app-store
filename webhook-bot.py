@@ -64,7 +64,9 @@ def deploy(repo_name):
     log.info(f'Deploying {repo_name} in {d}')
 
     # Pull latest
-    result = subprocess.run(['git', 'pull', '--ff-only'], cwd=d, capture_output=True, text=True)
+    result = subprocess.run(['git', 'pull', '--ff-only', 'origin', 'main'], cwd=d, capture_output=True, text=True)
+    if result.returncode != 0:
+        result = subprocess.run(['git', 'pull', '--ff-only', 'origin', 'master'], cwd=d, capture_output=True, text=True)
     log.info(f'git pull: {result.stdout.strip()} {result.stderr.strip()}')
 
     # Build
