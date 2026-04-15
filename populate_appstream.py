@@ -167,35 +167,42 @@ for app in apps:
 
     SubElement(comp, "content_rating", type="oars-1.1")
 
+    # Bundle element is arch-specific; we'll build two XML variants below
     SubElement(comp, "bundle",
                type="flatpak",
-               runtime="org.gnome.Platform/x86_64/45",
-               sdk="org.gnome.Sdk/x86_64/45").text = app_id
+               runtime="org.gnome.Platform/{ARCH}/45",
+               sdk="org.gnome.Sdk/{ARCH}/45").text = app_id
 
     success_count += 1
 
 if missing_folders:
     print(f"  Apps without matched folders ({len(missing_folders)}): {missing_folders[:10]}{'...' if len(missing_folders) > 10 else ''}")
 
-# Pretty-print XML
-xml_str = minidom.parseString(tostring(components_el, encoding="unicode")).toprettyxml(indent="  ")
-# Remove the extra <?xml?> declaration added by toprettyxml, we'll add our own
-if xml_str.startswith("<?xml"):
-    xml_str = xml_str[xml_str.index("\n")+1:]
-xml_out = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
+# Build per-arch XML variants
+ARCHES = ["x86_64", "aarch64"]
+arch_gz = {}
 
-# Write XML
-XML_PATH = "/tmp/appstream.xml"
-GZ_PATH = "/tmp/appstream.xml.gz"
+for _arch in ARCHES:
+    _xml_str = minidom.parseString(
+        tostring(components_el, encoding="unicode").replace("{ARCH}", _arch)
+    ).toprettyxml(indent="  ")
+    if _xml_str.startswith("<?xml"):
+        _xml_str = _xml_str[_xml_str.index("\n")+1:]
+    _xml_out = '<?xml version="1.0" encoding="UTF-8"?>\n' + _xml_str
 
-with open(XML_PATH, "w", encoding="utf-8") as f:
-    f.write(xml_out)
-print(f"Written {XML_PATH} ({os.path.getsize(XML_PATH)} bytes)")
+    _xml_path = f"/tmp/appstream-{_arch}.xml"
+    _gz_path  = f"/tmp/appstream-{_arch}.xml.gz"
+    with open(_xml_path, "w", encoding="utf-8") as f:
+        f.write(_xml_out)
+    with open(_xml_path, "rb") as f_in:
+        with gzip.open(_gz_path, "wb") as f_out:
+            f_out.write(f_in.read())
+    arch_gz[_arch] = _gz_path
+    print(f"Written {_gz_path} ({os.path.getsize(_gz_path)} bytes)")
 
-with open(XML_PATH, "rb") as f_in:
-    with gzip.open(GZ_PATH, "wb") as f_out:
-        f_out.write(f_in.read())
-print(f"Written {GZ_PATH} ({os.path.getsize(GZ_PATH)} bytes)")
+# Keep backward-compat aliases
+XML_PATH = "/tmp/appstream-x86_64.xml"
+GZ_PATH  = arch_gz["x86_64"]
 
 # ── Download icons ────────────────────────────────────────────────────────────
 print("Downloading icons...")
@@ -232,6 +239,15 @@ print(f"Icons: {icon_ok} ok, {icon_fail} failed")
 import shutil
 shutil.copy(GZ_PATH, "/tmp/appstream-commit/appstream.xml.gz")
 print("Prepared /tmp/appstream-commit/")
+# aarch64 commit dir
+os.makedirs("/tmp/appstream-commit-aarch64/icons/128x128", exist_ok=True)
+import shutil as _sh2
+# skip - icons copied separately below
+shutil.copy(arch_gz["aarch64"], "/tmp/appstream-commit-aarch64/appstream.xml.gz")
+# also copy icons
+if os.path.isdir("/tmp/appstream-commit/icons"):
+    _sh2.copytree("/tmp/appstream-commit/icons", "/tmp/appstream-commit-aarch64/icons", dirs_exist_ok=True)
+print("Prepared /tmp/appstream-commit-aarch64/")
 
 # ── OSTree commits ────────────────────────────────────────────────────────────
 REPO = "/srv/flatpak-repo"
@@ -248,25 +264,25 @@ def run(cmd, check=True):
         sys.exit(1)
     return r
 
-print("\nCommitting to OSTree appstream/x86_64...")
-run([
-    "ostree", "commit",
-    f"--repo={REPO}",
-    "--branch=appstream/x86_64",
-    "--tree=dir=/tmp/appstream-commit",
-    "--timestamp=2026-04-11T00:00:00Z",
-    "--no-bindings",
-])
-
-print("Committing to OSTree appstream2/x86_64...")
-run([
-    "ostree", "commit",
-    f"--repo={REPO}",
-    "--branch=appstream2/x86_64",
-    "--tree=dir=/tmp/appstream-commit",
-    "--timestamp=2026-04-11T00:00:00Z",
-    "--no-bindings",
-])
+for _arch, _commit_dir in [("x86_64", "/tmp/appstream-commit"), ("aarch64", "/tmp/appstream-commit-aarch64")]:
+    print(f"\nCommitting to OSTree appstream/{_arch}...")
+    run([
+        "ostree", "commit",
+        f"--repo={REPO}",
+        f"--branch=appstream/{_arch}",
+        f"--tree=dir={_commit_dir}",
+        "--timestamp=2026-04-11T00:00:00Z",
+        "--no-bindings",
+    ])
+    print(f"Committing to OSTree appstream2/{_arch}...")
+    run([
+        "ostree", "commit",
+        f"--repo={REPO}",
+        f"--branch=appstream2/{_arch}",
+        f"--tree=dir={_commit_dir}",
+        "--timestamp=2026-04-11T00:00:00Z",
+        "--no-bindings",
+    ])
 
 print("\nUpdating repo summary...")
 run([
@@ -275,18 +291,26 @@ run([
     REPO,
 ])
 
-print("\nCopying appstream.xml.gz to served location...")
-os.makedirs(f"{REPO}/appstream/x86_64", exist_ok=True)
-shutil.copy(GZ_PATH, f"{REPO}/appstream/x86_64/appstream.xml.gz")
-print(f"Copied to {REPO}/appstream/x86_64/appstream.xml.gz")
+print("\nCopying appstream.xml.gz to served locations...")
+for _arch, _gz in arch_gz.items():
+    _dst_dir = f"{REPO}/appstream/{_arch}"
+    os.makedirs(_dst_dir, exist_ok=True)
+    shutil.copy(_gz, f"{_dst_dir}/appstream.xml.gz")
+    print(f"Copied to {_dst_dir}/appstream.xml.gz")
+    # also copy icons
+    _icon_src = f"/tmp/appstream-icons/128x128"
+    _icon_dst = f"{_dst_dir}/icons/128x128"
+    if os.path.isdir(_icon_src):
+        os.makedirs(_icon_dst, exist_ok=True)
+        for _ic in os.listdir(_icon_src):
+            shutil.copy2(f"{_icon_src}/{_ic}", f"{_icon_dst}/{_ic}")
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 print("\nVerifying...")
 with gzip.open(GZ_PATH, "rb") as f:
-    content = f.read().decode("utf-8")
-component_count = content.count("<component")
+    _verify_content = f.read().decode("utf-8")
+component_count = _verify_content.count("<component")
 print(f"Components in appstream.xml.gz: {component_count}")
 
-print(f"\n✓ Done. {success_count} components written to AppStream XML.")
-print(f"  appstream.xml.gz: {GZ_PATH}")
-print(f"  OSTree branches: appstream/x86_64, appstream2/x86_64")
+print(f"\n✓ Done. {success_count} components written to AppStream XML for x86_64 + aarch64.")
+print(f"  OSTree branches: appstream/x86_64, appstream2/x86_64, appstream/aarch64, appstream2/aarch64")
