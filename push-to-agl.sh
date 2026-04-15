@@ -35,6 +35,7 @@ BUNDLE_FILE=""
 KEEP_BUNDLE=false
 GPG_KEY=""  # fingerprint of the AGL signing key (auto-detected if omitted)
 ARCH=""     # target architecture (default: native; set to aarch64 for Pi 4)
+MULTI_ARCH=false  # build and upload for both x86_64 and aarch64
 
 # ── Parse arguments ─────────────────────────────────────────────────────────
 usage() {
@@ -57,6 +58,7 @@ Optional:
   --bundle FILE         Use existing .flatpak bundle instead of building from repo
   --gpg-key FINGERPRINT GPG key fingerprint to sign with (auto-detected if omitted)
   --arch ARCH           Target architecture: x86_64 (default) or aarch64
+  --multi-arch          Build and upload for both x86_64 AND aarch64 (pure-Python apps)
   --keep-bundle         Do not delete the .flatpak bundle after upload
 
 First-time setup:
@@ -92,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     --repo)        REPO_DIR="$2"; shift 2 ;;
     --bundle)      BUNDLE_FILE="$2"; shift 2 ;;
     --arch)        ARCH="$2"; shift 2 ;;
+    --multi-arch)  MULTI_ARCH=true; shift ;;
     --gpg-key)     GPG_KEY="$2"; shift 2 ;;
     --keep-bundle) KEEP_BUNDLE=true; shift ;;
     -h|--help)     usage ;;
@@ -181,31 +184,73 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Step 2: Sign bundle ───────────────────────────────────────────────────────
-echo "==> Signing bundle with key ${GPG_KEY: -16}..."
-rm -f "$SIG_FILE"
-gpg --armor --detach-sign \
-    --default-key "$GPG_KEY" \
-    --output "$SIG_FILE" \
-    "$BUNDLE_FILE"
-echo "    Signature: $SIG_FILE"
+# ── Step 2 & 3: Sign and upload (per arch) ────────────────────────────────────
+_do_upload() {
+  local bundle="$1"
+  local sig="${bundle}.asc"
+  echo "==> Signing ${bundle} with key ${GPG_KEY: -16}..."
+  rm -f "$sig"
+  gpg --armor --detach-sign \
+      --default-key "$GPG_KEY" \
+      --output "$sig" \
+      "$bundle"
 
-# ── Step 3: Upload signed bundle ──────────────────────────────────────────────
-echo "==> Uploading bundle to AGL store..."
-UPLOAD_RESP=$(curl -sf \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@${BUNDLE_FILE};type=application/octet-stream" \
-  -F "signature=$(cat "$SIG_FILE")" \
-  "${API_BASE}/developer/upload-bundle") || {
-    echo "Error: Upload failed."
-    echo "  Check your token, signing key, and network connection."
-    echo "  Bundle file:  $BUNDLE_FILE"
-    echo "  Signature:    $SIG_FILE"
-    exit 1
+  echo "==> Uploading ${bundle} to AGL store..."
+  local resp
+  resp=$(curl -sf \
+    -H "Authorization: Bearer $TOKEN" \
+    -F "file=@${bundle};type=application/octet-stream" \
+    -F "signature=$(cat "$sig")" \
+    "${API_BASE}/developer/upload-bundle") || {
+      echo "Error: Upload failed for ${bundle}."
+      rm -f "$sig"
+      return 1
+  }
+  rm -f "$sig"
+  local did
+  did=$(echo "$resp" | grep -o '"app_id":"[^"]*"' | cut -d'"' -f4 || true)
+  local arches
+  arches=$(echo "$resp" | grep -o '"arches":\[[^]]*\]' || echo "")
+  echo "    Upload OK. app_id=${did:-$APP_ID} ${arches}"
 }
 
-DETECTED_ID=$(echo "$UPLOAD_RESP" | grep -o '"app_id":"[^"]*"' | cut -d'"' -f4 || true)
-echo "    Upload successful. Detected app_id: ${DETECTED_ID:-$APP_ID}"
+# Build and upload aarch64 bundle if --multi-arch
+if $MULTI_ARCH; then
+  echo "==> Multi-arch mode: building aarch64 bundle..."
+  AARCH64_BUNDLE="${APP_ID}-aarch64.flatpak"
+  AARCH64_REPO="${REPO_DIR}-aarch64"
+
+  # For pure-Python apps: copy the repo and create an aarch64 ref from x86_64 content
+  rm -rf "$AARCH64_REPO"
+  cp -r "$REPO_DIR" "$AARCH64_REPO"
+
+  # Get the x86_64 ref name
+  X86_REF=$(ostree --repo="$AARCH64_REPO" refs 2>/dev/null | grep "^app/${APP_ID}/x86_64" | head -1 || true)
+  if [[ -n "$X86_REF" ]]; then
+    AARCH64_REF="${X86_REF/x86_64/aarch64}"
+    _AARCH64_TMP=$(mktemp -d)
+    ostree --repo="$AARCH64_REPO" checkout --user-mode "$X86_REF" "$_AARCH64_TMP/content"
+    # patch metadata
+    if [[ -f "$_AARCH64_TMP/content/metadata" ]]; then
+      sed -i 's|/x86_64/|/aarch64/|g' "$_AARCH64_TMP/content/metadata"
+      _XA_META=$(cat "$_AARCH64_TMP/content/metadata")
+    fi
+    ostree --repo="$AARCH64_REPO" commit       --branch="$AARCH64_REF"       --tree=dir="$_AARCH64_TMP/content"       ${_XA_META:+--add-metadata-string="xa.metadata=${_XA_META}"}       2>/dev/null
+    rm -rf "$_AARCH64_TMP"
+
+    flatpak build-bundle --arch=aarch64 "$AARCH64_REPO" "$AARCH64_BUNDLE" "$APP_ID" 2>/dev/null
+    _do_upload "$AARCH64_BUNDLE"
+    $KEEP_BUNDLE || rm -f "$AARCH64_BUNDLE"
+  else
+    echo "  Warning: no x86_64 ref found in repo — skipping aarch64 bundle."
+  fi
+  rm -rf "$AARCH64_REPO"
+fi
+
+SIG_FILE="${BUNDLE_FILE}.asc"
+_do_upload "$BUNDLE_FILE"
+UPLOAD_RESP="done"  # placeholder; real response printed above
+DETECTED_ID="$APP_ID"
 
 # ── Step 4: Submit metadata ───────────────────────────────────────────────────
 echo "==> Submitting app metadata..."

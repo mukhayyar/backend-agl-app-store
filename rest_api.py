@@ -1271,26 +1271,30 @@ async def upload_bundle(
         if imported_arch == "x86_64":
             try:
                 import tempfile as _tf, shutil as _sh, os as _os
-                _tmp_mirror = _tf.mkdtemp(prefix="aarch64-")
+                _tmp_parent = _tf.mkdtemp(prefix="aarch64-")
+                _dest = _os.path.join(_tmp_parent, "checkout")
                 _ref = f"app/{app_id}/x86_64/master"
                 _aref = f"app/{app_id}/aarch64/master"
                 subprocess.run(
-                    ["ostree", f"--repo={REPO}", "checkout", "--user-mode", "-U", _ref, _tmp_mirror],
+                    ["ostree", f"--repo={REPO}", "checkout", "--user-mode", _ref, _dest],
                     capture_output=True, check=True, timeout=30
                 )
-                # patch metadata arch
-                _meta = _os.path.join(_tmp_mirror, "metadata")
+                # patch metadata arch + capture for xa.metadata extra
+                _meta = _os.path.join(_dest, "metadata")
+                _xa_meta = ""
                 if _os.path.exists(_meta):
-                    _os.replace(_meta, _meta + ".bak")
-                    with open(_meta + ".bak") as _f: _mc = _f.read()
-                    with open(_meta, "w") as _f: _f.write(_mc.replace("/x86_64/", "/aarch64/"))
-                subprocess.run(
-                    ["ostree", f"--repo={REPO}", "commit",
-                     f"--branch={_aref}", f"--tree=dir={_tmp_mirror}",
-                     "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--no-xattrs"],
-                    capture_output=True, check=True, timeout=60
-                )
-                _sh.rmtree(_tmp_mirror, ignore_errors=True)
+                    with open(_meta) as _f: _mc = _f.read()
+                    _xa_meta = _mc.replace("/x86_64/", "/aarch64/")
+                    with open(_meta, "w") as _f: _f.write(_xa_meta)
+                _commit_args = [
+                    "ostree", f"--repo={REPO}", "commit",
+                    f"--branch={_aref}", f"--tree=dir={_dest}",
+                    "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--no-xattrs",
+                ]
+                if _xa_meta:
+                    _commit_args.append(f"--add-metadata-string=xa.metadata={_xa_meta}")
+                subprocess.run(_commit_args, capture_output=True, check=True, timeout=60)
+                _sh.rmtree(_tmp_parent, ignore_errors=True)
             except Exception:
                 pass  # aarch64 mirror is best-effort
 
