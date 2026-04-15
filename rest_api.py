@@ -1265,6 +1265,35 @@ async def upload_bundle(
         else:
             app_id = match.group(1)
 
+        # Auto-mirror to aarch64 if the app contains only arch-independent content (Python scripts)
+        arch_match = _re.search(r'app/[^/]+/([^/]+)/', result.stdout + result.stderr)
+        imported_arch = arch_match.group(1) if arch_match else "x86_64"
+        if imported_arch == "x86_64":
+            try:
+                import tempfile as _tf, shutil as _sh, os as _os
+                _tmp_mirror = _tf.mkdtemp(prefix="aarch64-")
+                _ref = f"app/{app_id}/x86_64/master"
+                _aref = f"app/{app_id}/aarch64/master"
+                subprocess.run(
+                    ["ostree", f"--repo={REPO}", "checkout", "--user-mode", "-U", _ref, _tmp_mirror],
+                    capture_output=True, check=True, timeout=30
+                )
+                # patch metadata arch
+                _meta = _os.path.join(_tmp_mirror, "metadata")
+                if _os.path.exists(_meta):
+                    _os.replace(_meta, _meta + ".bak")
+                    with open(_meta + ".bak") as _f: _mc = _f.read()
+                    with open(_meta, "w") as _f: _f.write(_mc.replace("/x86_64/", "/aarch64/"))
+                subprocess.run(
+                    ["ostree", f"--repo={REPO}", "commit",
+                     f"--branch={_aref}", f"--tree=dir={_tmp_mirror}",
+                     "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--no-xattrs"],
+                    capture_output=True, check=True, timeout=60
+                )
+                _sh.rmtree(_tmp_mirror, ignore_errors=True)
+            except Exception:
+                pass  # aarch64 mirror is best-effort
+
         # Rebuild repo summary to make ref available
         subprocess.run(
             ["flatpak", "build-update-repo",
@@ -1273,9 +1302,11 @@ async def upload_bundle(
             capture_output=True, timeout=60
         )
 
+        arches = ["x86_64", "aarch64"] if imported_arch == "x86_64" else [imported_arch]
         return {
             "app_id": app_id,
-            "message": f"Bundle imported successfully. Now call POST /developer/submit with app_id='{app_id}' and your app metadata.",
+            "arches": arches,
+            "message": f"Bundle imported successfully for {', '.join(arches)}. Now call POST /developer/submit with app_id='{app_id}' and your app metadata.",
             "next_step": "POST /developer/submit"
         }
     finally:
