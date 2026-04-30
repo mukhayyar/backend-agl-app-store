@@ -15,6 +15,7 @@ from pydantic import BaseModel, field_validator
 import jwt as pyjwt
 import httpx
 from sqlalchemy.orm import Session
+from sqlalchemy import text as _sa_text
 from database import (
     SessionLocal, engine, Base, App, User, Category,
     ConnectedAccount, UserRole, DeveloperToken, AppSubmission, DeveloperGpgKey
@@ -82,7 +83,7 @@ def _run_migrations():
             ("revocation_reason", "TEXT"),
         ]:
             try:
-                conn.execute(text(f"ALTER TABLE app_submissions ADD COLUMN IF NOT EXISTS {col} {typ}"))
+                conn.execute(text(f"ALTER TABLE apps ADD COLUMN IF NOT EXISTS {col} {typ}"))
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -447,8 +448,15 @@ def _require_jwt_user(authorization: str = Header(None), db: Session = Depends(g
     return user
 
 def _require_jwt_admin(user: User = Depends(_require_jwt_user)) -> User:
+    """Allow admin and reviewer roles (submission review routes)."""
     if getattr(user, "role", "user") not in ("admin", "reviewer"):
         raise HTTPException(status_code=403, detail="Admin or reviewer access required")
+    return user
+
+def _require_jwt_admin_only(user: User = Depends(_require_jwt_user)) -> User:
+    """Strict admin-only access."""
+    if getattr(user, "role", "user") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
 def _get_dev_user(
@@ -1421,12 +1429,12 @@ def update_submission(sub_id: int, body: SubmitAppRequest, user: User = Depends(
 # ── Admin Review ───────────────────────────────────────────────────────────
 @app.get("/admin/submissions")
 def list_submissions(
-    status: Optional[str] = Query("pending"),
+    status: Optional[str] = Query(None),
     admin: User = Depends(_require_jwt_admin),
     db: Session = Depends(get_db),
 ):
     q = db.query(AppSubmission)
-    if status:
+    if status and status != "all":
         q = q.filter(AppSubmission.status == status)
     subs = q.order_by(AppSubmission.submitted_at.asc()).all()
     result = []
@@ -1725,13 +1733,37 @@ def github_callback(code: str, state: str = "", db: Session = Depends(get_db)):
 
 
 
+@app.get("/auth/connected-accounts")
+def get_connected_accounts(user: User = Depends(_require_jwt_user), db: Session = Depends(get_db)):
+    """Return all connected OAuth accounts for the current user."""
+    accounts = db.query(ConnectedAccount).filter(ConnectedAccount.user_id == user.id).all()
+    return [
+        {
+            "provider": a.provider,
+            "login": a.login,
+            "display_name": a.display_name,
+            "avatar_url": a.avatar_url,
+            "email": a.email,
+            "created_at": str(a.created_at) if a.created_at else None,
+            "last_used": str(a.last_used) if a.last_used else None,
+        }
+        for a in accounts
+    ]
+
+
 @app.get("/auth/github/link")
-def github_link_start(admin: User = Depends(_require_jwt_admin)):
-    """Start GitHub OAuth flow to link a GitHub account to the current admin user."""
+def github_link_start(token: str = Query(None)):
+    """Start GitHub OAuth flow to link a GitHub account to the current user."""
     if not GITHUB_CLIENT_ID:
         raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+    if not token:
+        raise HTTPException(status_code=401, detail="Token required")
+    try:
+        pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
     state = secrets.token_urlsafe(16)
-    callback_url = f"{FRONTEND_ADMIN_URL}/api/auth/github/link-callback"
+    callback_url = f"{FRONTEND_ADMIN_URL}/api/auth/github/link-callback?token={token}"
     params = urllib.parse.urlencode({
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": callback_url,
@@ -1755,8 +1787,7 @@ def github_link_callback(code: str, state: str = "", token: str = Query(None), d
         role = payload.get("role", "developer")
     except Exception:
         return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=invalid_token", status_code=302)
-    if role not in ("admin", "reviewer"):
-        return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=not_admin", status_code=302)
+    # Any authenticated user can link a GitHub account
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return RedirectResponse(f"{FRONTEND_ADMIN_URL}/#error=user_not_found", status_code=302)
@@ -1831,11 +1862,11 @@ def github_link_callback(code: str, state: str = "", token: str = Query(None), d
 
     db.commit()
     success_msg = urllib.parse.quote(f"GitHub account @{gh_login} linked successfully.")
-    return RedirectResponse(f"{FRONTEND_ADMIN_URL}/admin/settings#github_linked={success_msg}", status_code=302)
+    return RedirectResponse(f"{FRONTEND_ADMIN_URL}/profile#github_linked={success_msg}", status_code=302)
 
 
 @app.get("/admin/builds/{build_id}/status")
-def get_build_status(build_id: int, admin: User = Depends(_require_jwt_admin)):
+def get_build_status(build_id: int, admin: User = Depends(_require_jwt_admin_only)):
     """Proxy flat-manager build status for admin inspection."""
     if not FLAT_MANAGER_ADMIN_TOKEN:
         raise HTTPException(status_code=503, detail="Flat-manager not configured")
@@ -1852,7 +1883,7 @@ def get_build_status(build_id: int, admin: User = Depends(_require_jwt_admin)):
 
 
 @app.get("/admin/builds")
-def list_builds(admin: User = Depends(_require_jwt_admin)):
+def list_builds(admin: User = Depends(_require_jwt_admin_only)):
     """List all flat-manager builds."""
     if not FLAT_MANAGER_ADMIN_TOKEN:
         raise HTTPException(status_code=503, detail="Flat-manager not configured")
@@ -1868,26 +1899,34 @@ def list_builds(admin: User = Depends(_require_jwt_admin)):
         raise HTTPException(status_code=502, detail=str(e))
 
 @app.get("/admin/stats")
-def admin_stats(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def admin_stats(admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
+    pending  = db.query(AppSubmission).filter(AppSubmission.status == "pending").count()
+    approved = db.query(AppSubmission).filter(AppSubmission.status == "approved").count()
+    rejected = db.query(AppSubmission).filter(AppSubmission.status == "rejected").count()
     return {
-        "apps_live": db.query(App).count(),
-        "submissions": {
-            "pending": db.query(AppSubmission).filter(AppSubmission.status == "pending").count(),
-            "approved": db.query(AppSubmission).filter(AppSubmission.status == "approved").count(),
-            "rejected": db.query(AppSubmission).filter(AppSubmission.status == "rejected").count(),
-        },
-        "active_developer_tokens": db.query(DeveloperToken).filter(DeveloperToken.is_active == True).count(),
-        "trusted_publishers": db.query(User).filter(User.is_trusted_publisher == True).count(),
-        "verified_apps": db.query(App).filter(App.is_verified == True, App.published == True).count(),
+        # Fields expected by the admin frontend AdminStats type
+        "total_apps":           db.query(App).count(),
+        "total_users":          db.query(User).count(),
+        "pending_submissions":  pending,
+        "approved_submissions": approved,
+        "rejected_submissions": rejected,
+        "total_submissions":    pending + approved + rejected,
+        # Extended fields
+        "apps_live":                db.query(App).filter(App.published == True).count(),
+        "active_developer_tokens":  db.query(DeveloperToken).filter(DeveloperToken.is_active == True).count(),
+        "trusted_publishers":       db.query(User).filter(User.is_trusted_publisher == True).count(),
+        "verified_apps":            db.query(App).filter(App.is_verified == True, App.published == True).count(),
+        "revoked_apps":             db.execute(_sa_text("SELECT COUNT(*) FROM apps WHERE revoked_at IS NOT NULL")).scalar() or 0,
+        "expired_apps":             db.execute(_sa_text("SELECT COUNT(*) FROM apps WHERE expires_at IS NOT NULL AND expires_at <= now()")).scalar() or 0,
     }
 
 @app.get("/admin/users")
-def list_users(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def list_users(admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     users = db.query(User).limit(100).all()
     return [{"id": u.id, "display_name": u.display_name, "role": getattr(u, "role", "user"), "accepted_publisher_agreement": bool(u.accepted_publisher_agreement_at), "is_trusted_publisher": bool(u.is_trusted_publisher), "trusted_at": str(u.trusted_at) if u.trusted_at else None, "app_count": db.query(App).filter(App.owner_user_id == u.id).count(), "email": getattr(u, "email", None), "email_verified": bool(getattr(u, "email_verified", False)), "is_organization_email": bool(getattr(u, "is_organization_email", False)), "organization_domain": getattr(u, "organization_domain", None), "auth_provider": getattr(u, "auth_provider", "github"), "trust_request_status": getattr(u, "trust_request_status", None), "trust_request_reason": getattr(u, "trust_request_reason", None), "trust_request_github": getattr(u, "trust_request_github", None), "trust_request_portfolio": getattr(u, "trust_request_portfolio", None), "trust_request_at": str(u.trust_request_at) if getattr(u, "trust_request_at", None) else None} for u in users]
 
 @app.get("/admin/users/{user_id}/profile")
-def get_admin_user_profile(user_id: int, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def get_admin_user_profile(user_id: int, admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1914,7 +1953,7 @@ def get_admin_user_profile(user_id: int, admin: User = Depends(_require_jwt_admi
     }
 
 @app.put("/admin/users/{user_id}/role")
-def set_user_role(user_id: int, role: str = Query(...), admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def set_user_role(user_id: int, role: str = Query(...), admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     if role not in ("user", "publisher", "reviewer", "admin"):
         raise HTTPException(status_code=400, detail="Invalid role")
     user = db.query(User).filter(User.id == user_id).first()
@@ -1976,7 +2015,7 @@ def admin_list_all_apps(
     status: Optional[str] = Query(None),
     limit: int = Query(200, le=500),
     offset: int = Query(0),
-    admin: User = Depends(_require_jwt_admin),
+    admin: User = Depends(_require_jwt_admin_only),
     db: Session = Depends(get_db),
 ):
     """Admin: list ALL apps including unpublished and expired."""
@@ -1994,6 +2033,8 @@ def admin_list_all_apps(
     elif status == "expiring":
         soon = _now + datetime.timedelta(days=30)
         q = q.filter(App.published == True).filter(App.expires_at != None).filter(App.expires_at > _now).filter(App.expires_at <= soon)
+    elif status == "revoked":
+        q = q.filter(_sa_text("apps.revoked_at IS NOT NULL"))
     return [
         {
             "id": a.id, "name": a.name, "summary": a.summary,
@@ -2005,13 +2046,15 @@ def admin_list_all_apps(
             "owner_user_id": a.owner_user_id,
             "gpg_fingerprint": a.gpg_fingerprint,
             "categories": [cat.name for cat in a.categories],
+            "revoked_at": str(a.__dict__.get("revoked_at")) if a.__dict__.get("revoked_at") else None,
+            "revocation_reason": a.__dict__.get("revocation_reason"),
         }
         for a in q.order_by(App.updated_at.desc()).offset(offset).limit(limit).all()
     ]
 
 @app.post("/admin/apps/{app_id}/unpublish")
 def admin_unpublish_app(app_id: str, body: UnpublishRequest,
-    admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+    admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     app_rec = db.query(App).filter(App.id == app_id).first()
     if not app_rec:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2026,7 +2069,7 @@ def admin_unpublish_app(app_id: str, body: UnpublishRequest,
 
 @app.post("/admin/apps/{app_id}/revoke")
 def admin_revoke_app(app_id: str, body: UnpublishRequest,
-    admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+    admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     """
     Permanently revoke an app from distribution:
     1. Removes the OSTree ref from the flatpak repo
@@ -2086,7 +2129,7 @@ def admin_revoke_app(app_id: str, body: UnpublishRequest,
     }
 
 @app.post("/admin/apps/{app_id}/publish")
-def admin_publish_app(app_id: str, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def admin_publish_app(app_id: str, admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     app_rec = db.query(App).filter(App.id == app_id).first()
     if not app_rec:
         raise HTTPException(status_code=404, detail="App not found")
@@ -2097,7 +2140,7 @@ def admin_publish_app(app_id: str, admin: User = Depends(_require_jwt_admin), db
 
 @app.post("/admin/apps/{app_id}/extend")
 def admin_extend_app(app_id: str, body: ExtendRequest,
-    admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+    admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     """Extend app expiry by N days (default 365)."""
     app_rec = db.query(App).filter(App.id == app_id).first()
     if not app_rec:
@@ -2390,7 +2433,7 @@ def get_my_trust_request(user: User = Depends(_get_dev_user)):
     }
 
 @app.post("/admin/users/{user_id}/trust")
-def trust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def trust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     """Mark a developer as a Trusted Publisher and generate their personal GPG key."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -2437,7 +2480,7 @@ def trust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin), db:
     }
 
 @app.post("/admin/users/{user_id}/untrust")
-def untrust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def untrust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     """Revoke trusted publisher status. Apps lose Verified badge."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -2704,7 +2747,7 @@ def list_developer_apps(developer: str = Query(...), db: Session = Depends(get_d
     return [{"id": a.id, "name": a.name, "type": a.type, "updated_at": a.updated_at} for a in apps_list]
 
 @app.get("/admin/pending-apps")
-def list_pending_apps(admin: User = Depends(_require_jwt_admin), db: Session = Depends(get_db)):
+def list_pending_apps(admin: User = Depends(_require_jwt_admin_only), db: Session = Depends(get_db)):
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
     apps_list = db.query(App).filter(App.added_at >= cutoff).order_by(App.added_at.desc()).limit(50).all()
     return [{"id": a.id, "name": a.name, "developer_name": a.developer_name, "type": a.type, "added_at": a.added_at} for a in apps_list]
