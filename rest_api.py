@@ -768,7 +768,9 @@ def _generate_gpg_key(app_id: str, app_name: str, developer_name: str, expire_ye
                 break
         exp_r = subprocess.run(["gpg", "--armor", "--export", uid_email],
             env=env, capture_output=True, text=True, timeout=10)
-        return fingerprint, exp_r.stdout, f"{uid_name} <{uid_email}>"
+        sec_r = subprocess.run(["gpg", "--armor", "--export-secret-keys", uid_email],
+            env=env, capture_output=True, text=True, timeout=10)
+        return fingerprint, exp_r.stdout, f"{uid_name} <{uid_email}>", sec_r.stdout
     finally:
         shutil.rmtree(gpg_home, ignore_errors=True)
 
@@ -1493,7 +1495,7 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
     _is_trusted = dev and getattr(dev, 'is_trusted_publisher', False)
     _gpg_expire_days = None if _is_trusted else 1
     try:
-        gpg_fingerprint_val, gpg_pub, gpg_uid_val = _generate_gpg_key(
+        gpg_fingerprint_val, gpg_pub, gpg_uid_val, _gpg_priv = _generate_gpg_key(
             sub.app_id, sub.name, dev.display_name if dev else "Developer",
             expire_days=_gpg_expire_days)
         app_rec.gpg_fingerprint = gpg_fingerprint_val
@@ -1988,7 +1990,7 @@ def renew_app(app_id: str, user: User = Depends(_get_dev_user), db: Session = De
         raise HTTPException(status_code=404, detail="App not found or not owned by you")
     now = datetime.datetime.utcnow()
     try:
-        fp, pub, uid = _generate_gpg_key(app_id, app_rec.name or app_id, user.display_name or "Developer")
+        fp, pub, uid, _gpg_priv = _generate_gpg_key(app_id, app_rec.name or app_id, user.display_name or "Developer")
         app_rec.gpg_fingerprint = fp
         app_rec.gpg_public_key = pub
         app_rec.gpg_uid = uid
@@ -2444,7 +2446,7 @@ def trust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin_only)
     email_addr = _get_user_email(db, user_id) or f"dev{user_id}@agl-store.cyou"
     fingerprint, public_key, uid = None, None, None
     try:
-        fingerprint, public_key, uid = _generate_gpg_key(
+        fingerprint, public_key, uid, private_key = _generate_gpg_key(
             f"publisher-{user_id}", dev_name, dev_name)
         # Deactivate old keys
         db.query(DeveloperGpgKey).filter(DeveloperGpgKey.user_id == user_id).update({"is_active": False})
@@ -2452,6 +2454,7 @@ def trust_publisher(user_id: int, admin: User = Depends(_require_jwt_admin_only)
             user_id=user_id,
             fingerprint=fingerprint,
             public_key=public_key,
+            private_key=private_key,
             uid=uid,
             created_at=now,
             expires_at=now + datetime.timedelta(days=365),
@@ -2517,6 +2520,25 @@ def get_my_gpg_key(user: User = Depends(_get_dev_user), db: Session = Depends(ge
         "is_active": key.is_active,
     }
 
+@app.get("/developer/my-gpg-key/download")
+def download_my_gpg_key(user: User = Depends(_get_dev_user), db: Session = Depends(get_db)):
+    """Download the developer's active private signing key as a .gpg file."""
+    key = db.query(DeveloperGpgKey).filter(
+        DeveloperGpgKey.user_id == user.id,
+        DeveloperGpgKey.is_active == True
+    ).order_by(DeveloperGpgKey.created_at.desc()).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="No active signing key found")
+    if not key.private_key:
+        raise HTTPException(status_code=404, detail="Private key not stored. Please renew your signing key.")
+    from fastapi.responses import Response
+    safe_name = (user.display_name or f"user{user.id}").replace(" ", "_")
+    return Response(
+        content=key.private_key.encode(),
+        media_type="application/pgp-keys",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_signing.gpg"'}
+    )
+
 @app.post("/developer/my-gpg-key/renew")
 def renew_my_gpg_key(user: User = Depends(_get_dev_user), db: Session = Depends(get_db)):
     """Renew personal publisher signing key (only for trusted publishers)."""
@@ -2525,7 +2547,7 @@ def renew_my_gpg_key(user: User = Depends(_get_dev_user), db: Session = Depends(
     now = datetime.datetime.utcnow()
     dev_name = user.display_name or f"user{user.id}"
     try:
-        fingerprint, public_key, uid = _generate_gpg_key(
+        fingerprint, public_key, uid, private_key = _generate_gpg_key(
             f"publisher-{user.id}", dev_name, dev_name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GPG key generation failed: {e}")
@@ -2535,6 +2557,7 @@ def renew_my_gpg_key(user: User = Depends(_get_dev_user), db: Session = Depends(
         user_id=user.id,
         fingerprint=fingerprint,
         public_key=public_key,
+        private_key=private_key,
         uid=uid,
         created_at=now,
         expires_at=now + datetime.timedelta(days=365),
@@ -2643,7 +2666,7 @@ def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_a
     trial_gpg = None
     if req.is_trial and req.app_id:
         try:
-            _fp, _pub, _uid = _generate_gpg_key(
+            _fp, _pub, _uid, _gpg_priv = _generate_gpg_key(
                 req.app_id, req.app_id.split(".")[-1], req.developer_name,
                 expire_days=1)
             trial_gpg = {"fingerprint": _fp, "public_key": _pub, "uid": _uid}
