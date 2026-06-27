@@ -12,9 +12,10 @@ log = logging.getLogger(__name__)
 
 class ScanJob:
     def __init__(self, submission_id: int, app_name: str, developer_name: str,
-                 manifest_content: str = None, bundle_path: str = None):
+                 app_id: str = None, manifest_content: str = None, bundle_path: str = None):
         self.submission_id    = submission_id
         self.app_name         = app_name
+        self.app_id           = app_id or app_name
         self.developer_name   = developer_name
         self.manifest_content = manifest_content
         self.bundle_path      = bundle_path
@@ -76,7 +77,7 @@ class ScanQueueWorker:
 
             result = run_scan(
                 submission_id=job.submission_id,
-                app_id=job.app_name,
+                app_id=job.app_id,
                 main_repo="/srv/flatpak-repo",
             )
             result_dict = asdict(result)

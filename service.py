@@ -249,7 +249,7 @@ class PENSAGLStoreService(pens_agl_store_pb2_grpc.FlathubServiceServicer):
             
             # Convert to summary response
             summary = pens_agl_store_pb2.SummaryResponse(
-                arches=["x86_64"],  # Would get from app metadata
+                arches=(__import__("json").loads(app.arches) if getattr(app, "arches", None) else ["x86_64"]),
                 branch=request.branch or "stable",
                 timestamp=int(app.updated_at.timestamp()) if app.updated_at else 0,
                 download_size=0,  # Would calculate from actual package size

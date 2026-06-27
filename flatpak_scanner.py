@@ -418,7 +418,7 @@ def scan_ostree_ref(submission_id: int, app_id: str, main_repo: str = "/srv/flat
     import tempfile, shutil
 
     result = ScanResult(submission_id=submission_id)
-    ref = f"app/{app_id}/x86_64/master"
+    ref = f"app/{app_id}/x86_64/stable"
     build_repo_base = os.path.join(main_repo, "build-repo")
 
     # --- Find the repo that contains this ref ---

@@ -66,6 +66,7 @@ class App(Base):
     scan_verdict = Column(String(16), nullable=True) # PASS / WARN / BLOCK / PENDING
     scan_at = Column(DateTime, nullable=True)
     scan_blocked = Column(Boolean, default=False)  # True if scanner vetoed
+    arches = Column(Text, nullable=True)  # JSON list of published arches e.g. ["x86_64","aarch64"]
     verification_verified = Column(Boolean, default=False)
     verification_method = Column(String(50), default="none")
     verification_login_name = Column(String(255))
@@ -306,6 +307,7 @@ class AppSubmission(Base):
     reviewer_id = Column(Integer, ForeignKey('users.id'))
     flatpak_build_id = Column(Integer, nullable=True)   # flat-manager build ID
     flatpak_build_url = Column(Text, nullable=True)     # full build URL from flat-manager
+    arches = Column(Text, nullable=True)  # JSON list of arches uploaded for this submission
 
     submitter = relationship("User", foreign_keys=[user_id])
     reviewer = relationship("User", foreign_keys=[reviewer_id])

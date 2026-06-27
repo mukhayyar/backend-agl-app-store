@@ -93,25 +93,25 @@ _run_migrations()
 _PUSH_SCRIPT_CONTENT = """#!/usr/bin/env bash
 # push-to-agl.sh — AGL PENS Store developer push script
 # Usage:
-#   ./push-to-agl.sh --token YOUR_API_KEY --app-id com.example.MyApp [options]
+#   ./push-to-agl.sh --token YOUR_JWT --app-id com.example.MyApp [options]
 #
 # Prerequisites:
-#   - flatpak-builder installed and app built into a local repo
-#   - API key from https://admin.agl-store.cyou/developer/portal
+#   flatpak-builder, flatpak, flat-manager-client, curl, jq, gpg
 #
-# Example full flow:
+# Example:
 #   flatpak-builder --force-clean --repo=repo build-dir com.example.MyApp.yml
-#   ./push-to-agl.sh \\
-#       --token sk-xxxx \\
-#       --app-id com.example.MyApp \\
-#       --name "My App" \\
-#       --summary "A short description" \\
-#       --category Utility \\
+#   ./push-to-agl.sh \
+#       --token YOUR_JWT \
+#       --app-id com.example.MyApp \
+#       --name "My App" \
+#       --summary "A short description" \
+#       --category Utility \
 #       --repo ./repo
 
 set -euo pipefail
 
 API_BASE="https://admin.agl-store.cyou/api"
+FM_URL="https://hub.agl-store.cyou"
 TOKEN=""
 APP_ID=""
 NAME=""
@@ -131,30 +131,20 @@ usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Required:
-  --token TOKEN         API key from the developer portal
+  --token TOKEN         JWT from developer portal login
   --app-id ID           Flatpak app ID (e.g. com.example.MyApp)
-  --name NAME           Display name of the app
-  --summary TEXT        One-line description (shown in store listing)
+  --name NAME           Display name
+  --summary TEXT        One-line description
 
 Optional:
   --description TEXT    Full description (default: same as summary)
   --category CAT        App category (default: Utility)
-  --license SPDX        License identifier (e.g. MIT, GPL-3.0)
-  --icon URL            URL to app icon (PNG, 128x128 recommended)
-  --homepage URL        Project homepage URL
-  --repo DIR            Path to local flatpak repo (default: ./repo)
-  --bundle FILE         Use existing .flatpak bundle instead of building from repo
-  --keep-bundle         Do not delete the .flatpak bundle after upload
-
-Example:
-  flatpak-builder --force-clean --repo=repo build-dir com.example.MyApp.yml
-  $(basename "$0") \\\\
-    --token sk-xxxx \\\\
-    --app-id com.example.MyApp \\\\
-    --name "My App" \\\\
-    --summary "Does something useful" \\\\
-    --category Utility \\\\
-    --repo ./repo
+  --license SPDX        License (e.g. MIT, GPL-3.0)
+  --icon URL            Icon URL (PNG, 128x128)
+  --homepage URL        Project homepage
+  --repo DIR            Local flatpak repo dir (default: ./repo)
+  --bundle FILE         Use existing .flatpak bundle instead of building
+  --keep-bundle         Keep .flatpak bundle after upload
 EOF
   exit 1
 }
@@ -178,13 +168,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Validate required args ─────────────────────────────────────────────────────
-[[ -z "$TOKEN" ]]   && { echo "Error: --token is required"; usage; }
-[[ -z "$APP_ID" ]]  && { echo "Error: --app-id is required"; usage; }
-[[ -z "$NAME" ]]    && { echo "Error: --name is required"; usage; }
-[[ -z "$SUMMARY" ]] && { echo "Error: --summary is required"; usage; }
+[[ -z "$TOKEN" ]]   && { echo "Error: --token required"; usage; }
+[[ -z "$APP_ID" ]]  && { echo "Error: --app-id required"; usage; }
+[[ -z "$NAME" ]]    && { echo "Error: --name required"; usage; }
+[[ -z "$SUMMARY" ]] && { echo "Error: --summary required"; usage; }
 
-# Validate app_id: no segment may start with a digit
+# Validate app_id segments
 IFS='.' read -ra SEGS <<< "$APP_ID"
 if [[ ${#SEGS[@]} -lt 3 ]]; then
   echo "Error: app_id must have at least 3 segments (e.g. com.example.MyApp)"
@@ -192,9 +181,7 @@ if [[ ${#SEGS[@]} -lt 3 ]]; then
 fi
 for seg in "${SEGS[@]}"; do
   if [[ "$seg" =~ ^[0-9] ]]; then
-    echo "Error: app_id segment '$seg' starts with a digit."
-    echo "  Flatpak will reject this ID at install time."
-    echo "  Rename it, e.g. '2048' → 'Game2048'"
+    echo "Error: app_id segment '$seg' starts with a digit — Flatpak will reject it."
     exit 1
   fi
 done
@@ -204,17 +191,18 @@ done
 # ── Step 1: Build bundle ───────────────────────────────────────────────────────
 CLEANUP_BUNDLE=false
 if [[ -z "$BUNDLE_FILE" ]]; then
-  if [[ ! -d "$REPO_DIR" ]]; then
-    echo "Error: repo directory '$REPO_DIR' not found."
-    echo "  Build it first: flatpak-builder --force-clean --repo=repo build-dir YOUR_MANIFEST.yml"
+  [[ ! -d "$REPO_DIR" ]] && {
+    echo "Error: repo dir '$REPO_DIR' not found."
+    echo "  Build first: flatpak-builder --force-clean --repo=$REPO_DIR build-dir YOUR_MANIFEST.yml"
     exit 1
-  fi
-
+  }
   BUNDLE_FILE="${APP_ID}.flatpak"
-  echo "==> Building bundle from $REPO_DIR..."
+  echo "==> [1/4] Building bundle from $REPO_DIR..."
   flatpak build-bundle "$REPO_DIR" "$BUNDLE_FILE" "$APP_ID"
   echo "    Bundle: $BUNDLE_FILE ($(du -sh "$BUNDLE_FILE" | cut -f1))"
   $KEEP_BUNDLE || CLEANUP_BUNDLE=true
+else
+  echo "==> [1/4] Using existing bundle: $BUNDLE_FILE"
 fi
 
 cleanup() {
@@ -224,59 +212,64 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Step 2: Upload bundle ──────────────────────────────────────────────────────
-echo "==> Uploading bundle to AGL store..."
-UPLOAD_RESP=$(curl -sf \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -F "file=@${BUNDLE_FILE};type=application/octet-stream" \\
+# ── Step 2: Push to flat-manager (OSTree) ─────────────────────────────────────
+echo "==> [2/4] Fetching flat-manager token..."
+FM_RESP=$(curl -sf -X POST "${API_BASE}/developer/fm-token" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"developer_name\":\"developer\",\"role\":\"developer\",\"app_id\":\"${APP_ID}\"}")
+
+FM_TOKEN=$(echo "$FM_RESP" | jq -r '.token // empty' 2>/dev/null || true)
+if [[ -z "$FM_TOKEN" ]]; then
+  echo "    Warning: could not get flat-manager token (not a trusted publisher?)"
+  echo "    Skipping OSTree push — app will publish after admin review."
+else
+  echo "    FM token OK. Pushing to OSTree..."
+  BUILD_URL=$(flat-manager-client --token "$FM_TOKEN" create "$FM_URL" stable "$APP_ID")
+  echo "    Build URL: $BUILD_URL"
+  flat-manager-client --token "$FM_TOKEN" push "$BUILD_URL" "$REPO_DIR"
+  flat-manager-client --token "$FM_TOKEN" commit --wait "$BUILD_URL"
+  echo "    OSTree ref live: app/${APP_ID}/x86_64/stable"
+fi
+
+# ── Step 3: Upload bundle to portal ───────────────────────────────────────────
+echo "==> [3/4] Uploading bundle..."
+UPLOAD_RESP=$(curl -sf \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@${BUNDLE_FILE};type=application/octet-stream" \
   "${API_BASE}/developer/upload-bundle") || {
-    echo "Error: Upload failed. Check your API key and network connection."
+    echo "Error: upload failed."
     exit 1
-}
+  }
+DETECTED_ID=$(echo "$UPLOAD_RESP" | jq -r '.app_id // empty' 2>/dev/null || true)
+echo "    Upload OK. app_id: ${DETECTED_ID:-$APP_ID}"
 
-DETECTED_ID=$(echo "$UPLOAD_RESP" | grep -o '"app_id":"[^"]*"' | cut -d'"' -f4 || true)
-echo "    Upload successful. Detected app_id: ${DETECTED_ID:-$APP_ID}"
+# ── Step 4: Submit metadata ────────────────────────────────────────────────────
+echo "==> [4/4] Submitting metadata..."
 
-# ── Step 3: Submit metadata ────────────────────────────────────────────────────
-echo "==> Submitting app metadata..."
+JSON_BODY="{\"app_id\":\"$APP_ID\",\"name\":\"$NAME\",\"summary\":\"$SUMMARY\",\"description\":\"$DESCRIPTION\",\"app_type\":\"desktop-application\",\"categories\":[\"$CATEGORY\"]"
+[[ -n "$LICENSE" ]]  && JSON_BODY="${JSON_BODY},\"license\":\"$LICENSE\""
+[[ -n "$ICON" ]]     && JSON_BODY="${JSON_BODY},\"icon\":\"$ICON\""
+[[ -n "$HOMEPAGE" ]] && JSON_BODY="${JSON_BODY},\"homepage\":\"$HOMEPAGE\""
+JSON_BODY="${JSON_BODY}}"
 
-# Build JSON
-JSON=$(cat <<ENDJSON
-{
-  "app_id": "$APP_ID",
-  "name": "$NAME",
-  "summary": "$SUMMARY",
-  "description": "$DESCRIPTION",
-  "app_type": "desktop-application",
-  "categories": ["$CATEGORY"]
-  $([ -n "$LICENSE" ]  && echo ", \\"license\\": \\"$LICENSE\\"")
-  $([ -n "$ICON" ]     && echo ", \\"icon\\": \\"$ICON\\"")
-  $([ -n "$HOMEPAGE" ] && echo ", \\"homepage\\": \\"$HOMEPAGE\\"")
-}
-ENDJSON
-)
-
-SUBMIT_RESP=$(curl -sf \\
-  -X POST \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d "$JSON" \\
+SUBMIT_RESP=$(curl -sf \
+  -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$JSON_BODY" \
   "${API_BASE}/developer/submit") || {
-    echo "Error: Submission failed."
-    echo "Response: $SUBMIT_RESP"
-    exit 1
-}
+    echo "Submit error (409 = already submitted, OSTree push still succeeded)."
+    exit 0
+  }
 
-SUB_ID=$(echo "$SUBMIT_RESP" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)
+SUB_ID=$(echo "$SUBMIT_RESP" | jq -r '.id // "?"' 2>/dev/null || echo "?")
 
-# ── Done ───────────────────────────────────────────────────────────────────────
 echo ""
-echo "✓ Done! Submission #${SUB_ID:-?} is now in the admin review queue."
-echo ""
-echo "  Track status: https://admin.agl-store.cyou/developer/portal"
-echo "  App ID:       $APP_ID"
-echo "  Next steps:   An admin will review, scan, and approve your app."
-echo "                You'll receive an email when it goes live."
+echo "Done."
+echo "  Submission : #${SUB_ID} in review queue"
+echo "  OSTree ref : app/${APP_ID}/x86_64/stable"
+echo "  Portal     : https://admin.agl-store.cyou/developer/portal"
 """
 
 app = FastAPI(title="AGL App Store API", version="2.0.0")
@@ -354,7 +347,7 @@ def _create_upload_token(user_id: int, app_id: str, sub_id: int) -> str:
         "user_id": user_id,
         "app_id": app_id,
         "sub_id": sub_id,
-        "exp": datetime.utcnow() + timedelta(hours=48),
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=48),
     }
     return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -371,9 +364,11 @@ def _verify_upload_or_dev_token(raw_token: str, db) -> "User":
     except Exception:
         pass
     # Fall back to regular dev auth (JWT session token or API key)
-    from models import DevKey as _DevKey
     # API key
-    key_row = db.query(_DevKey).filter(_DevKey.token == raw_token).first()
+    key_row = db.query(DeveloperToken).filter(
+        DeveloperToken.token_hash == _hash_token(raw_token),
+        DeveloperToken.is_active == True,
+    ).first()
     if key_row:
         user = db.query(User).filter(User.id == key_row.user_id).first()
         if user and user.role in ("developer", "admin"):
@@ -381,7 +376,7 @@ def _verify_upload_or_dev_token(raw_token: str, db) -> "User":
     # JWT session
     try:
         payload = _decode_jwt(raw_token)
-        user = db.query(User).filter(User.id == payload.get("user_id")).first()
+        user = db.query(User).filter(User.id == int(payload["sub"])).first()
         if user and user.role in ("developer", "admin"):
             return user
     except Exception:
@@ -1275,38 +1270,8 @@ async def upload_bundle(
         else:
             app_id = match.group(1)
 
-        # Auto-mirror to aarch64 if the app contains only arch-independent content (Python scripts)
-        arch_match = _re.search(r'app/[^/]+/([^/]+)/', result.stdout + result.stderr)
+        arch_match = re.search(r'app/[^/]+/([^/]+)/', result.stdout + result.stderr)
         imported_arch = arch_match.group(1) if arch_match else "x86_64"
-        if imported_arch == "x86_64":
-            try:
-                import tempfile as _tf, shutil as _sh, os as _os
-                _tmp_parent = _tf.mkdtemp(prefix="aarch64-")
-                _dest = _os.path.join(_tmp_parent, "checkout")
-                _ref = f"app/{app_id}/x86_64/master"
-                _aref = f"app/{app_id}/aarch64/master"
-                subprocess.run(
-                    ["ostree", f"--repo={REPO}", "checkout", "--user-mode", _ref, _dest],
-                    capture_output=True, check=True, timeout=30
-                )
-                # patch metadata arch + capture for xa.metadata extra
-                _meta = _os.path.join(_dest, "metadata")
-                _xa_meta = ""
-                if _os.path.exists(_meta):
-                    with open(_meta) as _f: _mc = _f.read()
-                    _xa_meta = _mc.replace("/x86_64/", "/aarch64/")
-                    with open(_meta, "w") as _f: _f.write(_xa_meta)
-                _commit_args = [
-                    "ostree", f"--repo={REPO}", "commit",
-                    f"--branch={_aref}", f"--tree=dir={_dest}",
-                    "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--no-xattrs",
-                ]
-                if _xa_meta:
-                    _commit_args.append(f"--add-metadata-string=xa.metadata={_xa_meta}")
-                subprocess.run(_commit_args, capture_output=True, check=True, timeout=60)
-                _sh.rmtree(_tmp_parent, ignore_errors=True)
-            except Exception:
-                pass  # aarch64 mirror is best-effort
 
         # Rebuild repo summary to make ref available
         subprocess.run(
@@ -1316,7 +1281,7 @@ async def upload_bundle(
             capture_output=True, timeout=60
         )
 
-        arches = ["x86_64", "aarch64"] if imported_arch == "x86_64" else [imported_arch]
+        arches = [imported_arch]
         return {
             "app_id": app_id,
             "arches": arches,
@@ -1380,13 +1345,16 @@ def submit_app(
     db.add(sub)
     db.commit()
     db.refresh(sub)
-    email = _get_user_email(db, user.id)
-    if email:
-        _email_submitted(email, body.name, body.app_id, sub.id)
-    _email_admin_new_sub(body.name, body.app_id, user.display_name or f"User#{user.id}", sub.id)
+    try:
+        email = _get_user_email(db, user.id)
+        if email:
+            _email_submitted(email, body.name, body.app_id, sub.id)
+        _email_admin_new_sub(body.name, body.app_id, user.display_name or f"User#{user.id}", sub.id)
+    except Exception: pass
     # [HOOK] enqueue scan + notify
     try:
         _enqueue_scan(ScanJob(submission_id=sub.id, app_name=body.name or body.app_id,
+            app_id=body.app_id,
             developer_name=user.display_name or f"User#{user.id}"))
         alert_new_submission(sub.id, body.name or body.app_id, user.display_name or f"User#{user.id}")
     except Exception: pass
@@ -1539,6 +1507,19 @@ def approve_submission(sub_id: int, admin: User = Depends(_require_jwt_admin), d
     elif sub.flatpak_build_id and not FLAT_MANAGER_ADMIN_TOKEN:
         print(f"[FM] FLAT_MANAGER_ADMIN_TOKEN not set — skipping publish for build {sub.flatpak_build_id}")
     # Regenerate appstream to include newly approved app
+    # Update App.arches from actual published OSTree refs
+    try:
+        import subprocess as _sp2, json as _json2
+        _refs_out = _sp2.run(
+            ["ostree", "--repo=/srv/flatpak-repo", "refs", "--list"],
+            capture_output=True, text=True
+        )
+        _pub_arches = list({r.split("/")[2] for r in _refs_out.stdout.splitlines() if r.startswith(f"app/{sub.app_id}/")})
+        if _pub_arches:
+            app_rec.arches = _json2.dumps(_pub_arches)
+            db.commit()
+    except Exception as _arch_err:
+        print(f"[arches] Failed: {_arch_err}")
     try:
         import subprocess as _sp
         _sp.run(["python3", POPULATE_APPSTREAM_SCRIPT], capture_output=True, cwd=APP_ROOT_DIR, timeout=30)
@@ -2086,14 +2067,21 @@ def admin_revoke_app(app_id: str, body: UnpublishRequest,
         raise HTTPException(status_code=404, detail="App not found")
 
     REPO = "/srv/flatpak-repo"
-    ref  = f"app/{app_id}/x86_64/master"
 
-    # 1. Remove OSTree ref
-    r = _sp.run(
-        ["ostree", f"--repo={REPO}", "refs", "--delete", ref],
+    # 1. Remove ALL arch refs for this app (x86_64, aarch64, arm, etc.)
+    _refs_r = _sp.run(
+        ["ostree", f"--repo={REPO}", "refs", "--list"],
         capture_output=True, text=True
     )
-    ostree_removed = r.returncode == 0
+    _app_refs = [r for r in _refs_r.stdout.splitlines() if r.startswith(f"app/{app_id}/")]
+    ostree_removed = False
+    for ref in _app_refs:
+        r = _sp.run(
+            ["ostree", f"--repo={REPO}", "refs", "--delete", ref],
+            capture_output=True, text=True
+        )
+        if r.returncode == 0:
+            ostree_removed = True
 
     # 2. Rebuild repo summary so the deletion propagates to devices
     if ostree_removed:
@@ -2347,11 +2335,15 @@ def check_expiry(_: bool = Depends(require_admin_key), db: Session = Depends(get
         import subprocess
         repo = "/srv/flatpak-repo"
         for app_id in unpublished:
-            ref = f"app/{app_id}/x86_64/master"
-            subprocess.run(
-                ["ostree", "refs", "--repo", repo, "--delete", ref],
-                capture_output=True
+            _exp_refs = subprocess.run(
+                ["ostree", "--repo", repo, "refs", "--list"],
+                capture_output=True, text=True
             )
+            for _ref in [r for r in _exp_refs.stdout.splitlines() if r.startswith(f"app/{app_id}/")]:
+                subprocess.run(
+                    ["ostree", "refs", "--repo", repo, "--delete", _ref],
+                    capture_output=True
+                )
         subprocess.run(
             ["flatpak", "build-update-repo", "--gpg-sign=E9ADCFFF97CE5264", "--gpg-homedir=/root/.gnupg", "--generate-static-deltas", repo],
             capture_output=True
@@ -2575,6 +2567,31 @@ def renew_my_gpg_key(user: User = Depends(_get_dev_user), db: Session = Depends(
     }
 
 # ── Legacy flat-manager token endpoint (kept for backward compat) ──────────
+@app.post("/developer/fm-token")
+def developer_fm_token(req: IssueTokenRequest, user: User = Depends(_get_dev_user)):
+    """Issue a flat-manager token scoped to the dev's app_id. Trusted publishers only."""
+    if not getattr(user, "is_trusted_publisher", False):
+        raise HTTPException(status_code=403, detail="Only trusted publishers can get a flat-manager token")
+    if not req.app_id:
+        raise HTTPException(status_code=400, detail="app_id required")
+    dev_name = user.display_name or f"user{user.id}"
+    cmd = [GENTOKEN_BIN, "--secret", FLAT_MANAGER_SECRET,
+           "--name", dev_name, "--repo", "stable",
+           "--scope", "build", "--scope", "upload",
+           "--prefix", req.app_id]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"gentoken failed: {result.stderr}")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="gentoken binary not found")
+    return {
+        "token": result.stdout.strip(),
+        "app_id": req.app_id,
+        "flat_manager_url": FLAT_MANAGER_URL,
+        "repo": "stable",
+    }
+
 @app.post("/developer/token")
 def issue_flat_manager_token(req: IssueTokenRequest, _: bool = Depends(require_admin_key)):
     if req.role not in ("developer", "admin"):
@@ -2847,6 +2864,7 @@ def scan_submission_endpoint(
     _enqueue_scan(ScanJob(
         submission_id=submission_id,
         app_name=sub.app_id or f"submission-{submission_id}",
+        app_id=sub.app_id,
         developer_name="",
     ))
     return {"status": "queued", "submission_id": submission_id}
